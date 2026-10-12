@@ -1,0 +1,9 @@
+.idea/
+__pycache__/
+*.pyc
+venv/
+env/
+instance/
+homework.db
+uploads/*
+!uploads/.gitkeep

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}作业详情{% endblock %}
+
+{% block content %}
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <h3>{{ assignment.title }}</h3>
+        <p class="text-muted">{{ assignment.description }}</p>
+        <hr>
+        <p class="mb-0"><strong>发布老师 ID：</strong> {{ assignment.teacher_id }}</p>
+    </div>
+</div>
+
+<!-- 如果是学生：显示上传表单 -->
+{% if current_user.role == 'STUDENT' %}
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white fw-bold">📤 提交作业</div>
+    <div class="card-body">
+        <form method="post" action="/assignment/submit" enctype="multipart/form-data">
+            <input type="hidden" name="assignment_id" value="{{ assignment.id }}">
+            <div class="mb-3">
+                <label class="form-label">选择文件 (文档/代码/压缩包)</label>
+                <input type="file" name="file" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-success">上传提交</button>
+        </form>
+    </div>
+</div>
+
+<!-- 学生查看自己的提交记录和成绩 -->
+{% if submissions %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white fw-bold">📄 我的提交记录</div>
+    <div class="card-body">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>文件名</th>
+                    <th>提交时间</th>
+                    <th>得分</th>
+                    <th>老师评语</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sub in submissions %}
+                <tr>
+                    <td>{{ sub.original_name }}</td>
+                    <td>已提交</td>
+                    <td><span class="badge bg-info text-dark">{{ sub.score if sub.score is not none else '未评分' }}</span></td>
+                    <td>{{ sub.comment if sub.comment else '暂无评语' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- 如果是老师：显示所有提交记录和打分表单 -->
+{% else %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white fw-bold">📋 学生提交记录</div>
+    <div class="card-body">
+        {% if submissions %}
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>学生 ID</th>
+                    <th>文件名</th>
+                    <th>当前得分</th>
+                    <th>评语</th>
+                    <th>操作（打分）</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sub in submissions %}
+                <tr>
+                    <td>{{ sub.student_id }}</td>
+                    <td>{{ sub.original_name }}</td>
+                    <td>{{ sub.score if sub.score is not none else '未评分' }}</td>
+                    <td>{{ sub.comment if sub.comment else '无' }}</td>
+                    <td>
+                        <form method="post" action="/assignment/grade" class="d-flex gap-1">
+                            <input type="hidden" name="submission_id" value="{{ sub.id }}">
+                            <input type="number" name="score" class="form-control form-control-sm" style="width: 70px;" placeholder="分数" required>
+                            <input type="text" name="comment" class="form-control form-control-sm" style="width: 120px;" placeholder="评语">
+                            <button type="submit" class="btn btn-primary btn-sm">评分</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted text-center py-4">还没有学生提交作业。</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

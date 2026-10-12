@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}用户登录{% endblock %}
+
+{% block content %}
+<div class="card col-md-5 mx-auto shadow-sm mt-5">
+    <div class="card-body p-4">
+        <h3 class="text-center mb-4">用户登录</h3>
+        
+        <form method="post" action="/login">
+            <div class="mb-3">
+                <label class="form-label">用户名</label>
+                <input type="text" name="username" class="form-control" required placeholder="请输入用户名">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">密码</label>
+                <input type="password" name="password" class="form-control" required placeholder="请输入密码">
+            </div>
+            <button type="submit" class="btn btn-primary w-100 py-2">登 录</button>
+            
+            <div class="mt-3 text-center">
+                <span class="text-muted">没有账号？</span>
+                <a href="/register" class="text-decoration-none">去注册</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
