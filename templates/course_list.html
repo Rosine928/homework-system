@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar"><div><h1>课程管理</h1><span class="muted">按课程和教学班组织作业</span></div></div>
+{% if current_user.role == 'TEACHER' %}<details class="panel" open><summary>＋ 创建课程</summary><form method="post" action="{{ url_for('create_course') }}"><label>课程名称</label><input name="name" maxlength="120" required><label>课程简介</label><textarea name="description" rows="3"></textarea><p><button>创建课程</button></p></form></details>{% else %}<section class="panel"><h2>加入教学班</h2><form method="post" action="{{ url_for('join_class') }}"><label>教师提供的加入码</label><input name="join_code" maxlength="20" required placeholder="例如 ABC12345"><p><button>加入班级</button></p></form></section>{% endif %}
+{% for course in courses %}<a class="item" href="{{ url_for('course_detail',course_id=course.id) }}"><div class="section-title"><h2>{{ course.name }}</h2><span class="muted">{{ course.classes|length }} 个教学班</span></div><p class="muted">{{ course.description or '暂无课程简介' }}</p><span>查看课程 →</span></a>{% else %}<div class="panel empty">暂无课程。</div>{% endfor %}
+{% endblock %}

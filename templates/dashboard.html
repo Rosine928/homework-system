@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar"><div><h1>{{ '教师工作台' if current_user.role == 'TEACHER' else '学生工作台' }}</h1><span class="muted">{{ current_user.username }}，这里汇总你的课程作业进度</span></div><a class="button" href="{{ url_for('assignment_list') }}">查看全部作业</a></div>
+{% if current_user.role == 'TEACHER' %}
+<div class="stats"><div class="stat"><strong>{{ courses|length }}</strong><span>我的课程</span></div><div class="stat"><strong>{{ classes|length }}</strong><span>教学班</span></div><div class="stat"><strong>{{ assignments|length }}</strong><span>作业总数</span></div><div class="stat"><strong>{{ pending_grades }}</strong><a href="{{ url_for('assignment_list',status='TO_GRADE') }}">待批改提交 →</a></div></div>
+<section class="panel"><div class="section-title"><h2>课程与教学班</h2><a href="{{ url_for('course_list') }}">管理课程 →</a></div>{% for course in courses %}<div class="list-row"><a href="{{ url_for('course_detail',course_id=course.id) }}"><strong>{{ course.name }}</strong></a><span class="muted">{{ course.classes|length }} 个教学班</span></div>{% else %}<div class="empty">还没有课程，请先创建课程。</div>{% endfor %}</section>
+<section class="panel"><h2>待批改作业</h2>{% for card in pending_cards %}<div class="list-row"><a href="{{ url_for('assignment_detail',id=card.assignment.id) }}">{{ card.assignment.title }}</a><span class="status to_grade">{{ card.pending_count }} 份待批改</span></div>{% else %}<div class="empty">暂无待批改提交。</div>{% endfor %}</section>
+{% else %}
+<div class="stats"><div class="stat"><strong>{{ enrollments|length }}</strong><span>已加入教学班</span></div><div class="stat"><strong>{{ cards|selectattr('status','equalto','PENDING')|list|length }}</strong><span>待提交作业</span></div><div class="stat"><strong>{{ upcoming|length }}</strong><span>3 天内截止</span></div><div class="stat"><strong>{{ graded|length }}</strong><span>最近已评分</span></div></div>
+<section class="panel"><div class="section-title"><h2>临近截止作业</h2><a href="{{ url_for('course_list') }}">我的课程 →</a></div>{% for card in upcoming[:5] %}<div class="list-row"><a href="{{ url_for('assignment_detail',id=card.assignment.id) }}"><strong>{{ card.assignment.title }}</strong></a><span class="muted">截止 {{ card.assignment.due_at.strftime('%m-%d %H:%M') }}</span><span class="status {{ card.status|lower }}">{{ status_labels[card.status] }}</span></div>{% else %}<div class="empty">暂无临近截止的作业。</div>{% endfor %}</section>
+<section class="panel"><div class="section-title"><h2>最近成绩</h2></div>{% for card in graded %}<div class="list-row"><a href="{{ url_for('assignment_detail',id=card.assignment.id) }}">{{ card.assignment.title }}</a><strong>{{ card.submission.score }} 分</strong></div>{% else %}<div class="empty">暂无已评分作业。</div>{% endfor %}</section>
+{% endif %}
+{% endblock %}
