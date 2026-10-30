@@ -1,1 +1,51 @@
-{% extends 'base.html' %}{% block content %}<div class="auth panel"><h1>创建账号</h1><form method="post"><label>用户名</label><input name="username" required minlength="2" maxlength="40"><label>密码</label><input type="password" name="password" required minlength="6" autocomplete="new-password"><label>身份</label><select name="role"><option value="STUDENT">学生</option><option value="TEACHER">教师</option></select><p><button>注册</button></p></form><a href="/login">返回登录</a></div>{% endblock %}
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- 同样的魔法背景层 -->
+<div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: #f0f7f4; z-index: -1;"></div>
+
+<!-- 居中布局 -->
+<div style="display: flex; justify-content: center; padding-top: 80px; position: relative; z-index: 1;">
+
+    <div style="width: 420px; border: 1px solid #eaeaea; border-radius: 8px; background-color: #ffffff; box-shadow: 0 4px 20px rgba(0,0,0,0.06); overflow: hidden;">
+
+        <div style="background-color: #f1f8e9; padding: 25px 20px; text-align: center; border-bottom: 1px solid #eaeaea;">
+            <h3 style="color: #2e7d32; margin: 0 0 8px 0; font-size: 1.5rem; font-weight: bold;">创建账号</h3>
+            <p style="color: #666; margin: 0; font-size: 0.85rem;">加入知行课堂，开启学习之旅</p>
+        </div>
+
+        <div style="padding: 25px;">
+            <form method="post">
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 6px; color: #666; font-size: 0.85rem;">用户名</label>
+                    <input name="username" required minlength="2" maxlength="40" placeholder="请输入用户名"
+                           style="width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem;">
+                </div>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 6px; color: #666; font-size: 0.85rem;">密码</label>
+                    <input type="password" name="password" required minlength="6" autocomplete="new-password" placeholder="请设置至少6位密码"
+                           style="width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem;">
+                </div>
+
+                <div style="margin-bottom: 25px;">
+                    <label style="display: block; margin-bottom: 6px; color: #666; font-size: 0.85rem;">身份</label>
+                    <select name="role" style="width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem; background-color: #fff;">
+                        <option value="STUDENT">学生</option>
+                        <option value="TEACHER">教师</option>
+                    </select>
+                </div>
+
+                <button type="submit" style="width: 100%; padding: 10px; background-color: #2e7d32; color: white; border: none; border-radius: 4px; font-size: 0.95rem; font-weight: 500; cursor: pointer;">
+                    注 册
+                </button>
+            </form>
+
+            <div style="margin-top: 20px; font-size: 0.85rem; text-align: left;">
+                <span style="color: #666;">已经有账号了？</span>
+                <a href="/login" style="color: #2e7d32; text-decoration: none; font-weight: 500;">返回登录</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,1 +1,43 @@
-{% extends 'base.html' %}{% block content %}<div class="auth panel"><h1>登录知行课堂</h1><p class="muted">课程作业与学习反馈</p><form method="post"><label>用户名</label><input name="username" required autocomplete="username"><label>密码</label><input type="password" name="password" required autocomplete="current-password"><p><button>登录</button></p></form><p class="muted">还没有账号？<a href="/register">立即注册</a></p></div>{% endblock %}
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- 魔法背景层：固定定位，铺满 100% 宽高，层级 -1 沉在最底下，彻底消灭白边 -->
+<div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: #f0f7f4; z-index: -1;"></div>
+
+<!-- 居中布局 -->
+<div style="display: flex; justify-content: center; padding-top: 80px; position: relative; z-index: 1;">
+
+    <div style="width: 420px; border: 1px solid #eaeaea; border-radius: 8px; background-color: #ffffff; box-shadow: 0 4px 20px rgba(0,0,0,0.06); overflow: hidden;">
+
+        <div style="background-color: #f1f8e9; padding: 25px 20px; text-align: center; border-bottom: 1px solid #eaeaea;">
+            <h3 style="color: #2e7d32; margin: 0 0 8px 0; font-size: 1.5rem; font-weight: bold;">登录知行课堂</h3>
+            <p style="color: #666; margin: 0; font-size: 0.85rem;">课程作业与学习反馈</p>
+        </div>
+
+        <div style="padding: 25px;">
+            <form method="POST" action="/login">
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 6px; color: #666; font-size: 0.85rem;">用户名</label>
+                    <input type="text" name="username" required placeholder="请输入用户名"
+                           style="width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem;">
+                </div>
+
+                <div style="margin-bottom: 25px;">
+                    <label style="display: block; margin-bottom: 6px; color: #666; font-size: 0.85rem;">密码</label>
+                    <input type="password" name="password" required placeholder="请输入密码"
+                           style="width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9rem;">
+                </div>
+
+                <button type="submit" style="width: 100%; padding: 10px; background-color: #2e7d32; color: white; border: none; border-radius: 4px; font-size: 0.95rem; font-weight: 500; cursor: pointer;">
+                    登 录
+                </button>
+            </form>
+
+            <div style="margin-top: 20px; font-size: 0.85rem; text-align: left;">
+                <span style="color: #666;">还没有账号？</span>
+                <a href="/register" style="color: #2e7d32; text-decoration: none; font-weight: 500;">立即注册</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

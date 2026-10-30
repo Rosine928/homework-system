@@ -157,10 +157,13 @@ def register():
         role = request.form.get("role", "STUDENT")
         if len(username) < 2 or len(username) > 40 or len(password) < 6:
             flash("用户名需为 2-40 个字符，密码至少 6 位。", "error")
+            return redirect(url_for("register"))
         elif role not in {"STUDENT", "TEACHER"}:
             flash("请选择有效的账号角色。", "error")
+            return redirect(url_for("register"))
         elif User.query.filter_by(username=username).first():
             flash("该用户名已被使用。", "error")
+            return redirect(url_for("register"))
         else:
             db.session.add(User(username=username, password=generate_password_hash(password), role=role))
             db.session.commit()
@@ -181,6 +184,7 @@ def login():
             login_user(user)
             return redirect(url_for("dashboard"))
         flash("用户名或密码不正确。", "error")
+        return redirect(url_for("login"))
     return render_template("login.html")
 
 

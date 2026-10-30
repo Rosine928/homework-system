@@ -1,1 +1,33 @@
 :root{font-family:Arial,'Microsoft YaHei',sans-serif;color:#26352d;background:#f5f7f4}*{box-sizing:border-box}body{margin:0}header{background:white;border-bottom:1px solid #dfe6df;padding:20px max(24px,calc((100% - 1100px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{font-size:22px;font-weight:bold;color:#27734e;text-decoration:none;white-space:nowrap}nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap}nav a{text-decoration:none}main{max-width:1100px;margin:40px auto;padding:0 20px}a{color:#287451}h1{font-size:28px;margin:0 0 12px}h2{font-size:19px}p{line-height:1.8}.muted{color:#758278;font-size:14px}.toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:25px;gap:20px}.panel,.item{background:white;border:1px solid #e0e6df;border-radius:6px;padding:24px;margin:16px 0}.item{display:block;color:inherit;text-decoration:none}.item:hover{border-color:#78a88b}.item h2{margin:0 0 12px}.auth{max-width:440px;margin:50px auto}.auth h1{margin-bottom:28px}label{display:block;margin:16px 0 7px;font-size:14px;font-weight:bold}input,textarea,select{display:block;width:100%;font:inherit;padding:11px;border:1px solid #d7dfd7;border-radius:5px;background:white;min-width:0}textarea{min-height:130px;resize:vertical}button,.button{display:inline-block;background:#287451;color:white;border:0;border-radius:5px;padding:11px 18px;font:inherit;cursor:pointer;text-decoration:none;white-space:nowrap}button:hover,.button:hover{background:#1b5d3e}.notice{padding:14px 18px;background:#e2efdf;margin-bottom:18px;border-radius:5px}.notice.error{background:#fbe3df;color:#8c3228}.details{white-space:pre-wrap;overflow-wrap:anywhere}.record{padding:20px 0;border-bottom:1px solid #e5eae4}.record:last-child{border:0}.grade{display:grid;grid-template-columns:110px 1fr auto;gap:12px;align-items:end}.grade label{margin-top:8px}.empty{text-align:center;padding:45px;color:#758278}summary{cursor:pointer;color:#287451;font-weight:bold}small{display:block;color:#758278;margin-top:8px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.stat{padding:24px;background:white;border:1px solid #e0e6df;border-radius:6px}.stat strong{display:block;font-size:32px;color:#287451;margin-bottom:8px}.stat span{font-size:14px;color:#758278}.section-title,.list-row{display:flex;gap:16px;align-items:center;justify-content:space-between}.section-title h2{margin-top:0}.list-row{padding:18px 0;border-bottom:1px solid #e5eae4}.list-row:last-child{border-bottom:0}.status{display:inline-block;white-space:nowrap;padding:5px 10px;border-radius:4px;background:#eaf1ee;font-size:13px;color:#287451}.status.overdue{background:#fbe3df;color:#8c3228}.status.to_grade{background:#fff1d8;color:#8a5d15}.code{display:inline-block;margin-left:10px;padding:4px 9px;background:#eef3ef;font-family:monospace;letter-spacing:1px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.filters{display:grid;grid-template-columns:2fr 1.5fr 1.5fr 1.5fr auto auto;gap:12px;align-items:end}.filters label{margin-top:0}.meta{display:flex;flex-wrap:wrap;gap:12px;font-size:14px;color:#758278}.item h2{overflow-wrap:anywhere}@media(max-width:850px){.filters{grid-template-columns:1fr 1fr}.stats{grid-template-columns:1fr 1fr}header{align-items:flex-start}nav{justify-content:flex-end}}@media(max-width:600px){header{padding:16px}.brand{font-size:18px}nav{gap:10px;font-size:12px}.grade,.form-grid,.filters{grid-template-columns:1fr}.toolbar,.section-title,.list-row{align-items:flex-start;flex-wrap:wrap}main{margin-top:24px}.panel{padding:18px}h1{font-size:24px}.stat{padding:18px}}
+
+/* 提示信息弹窗美化 */
+.notice {
+    padding: 15px 20px;
+    margin: 20px auto;
+    max-width: 800px;
+    border-radius: 6px;
+    font-size: 1rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    text-align: center;
+}
+
+/* 错误提示（红色） */
+.notice.danger {
+    background-color: #fde8e8;
+    color: #c53030;
+    border: 1px solid #f8b4b4;
+}
+
+/* 成功提示（绿色） */
+.notice.success {
+    background-color: #def7ec;
+    color: #03543f;
+    border: 1px solid #84e1bc;
+}
+
+/* 普通提示（蓝色） */
+.notice.message, .notice.info {
+    background-color: #e1effe;
+    color: #1e429f;
+    border: 1px solid #a4cafe;
+}
