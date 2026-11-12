@@ -1,0 +1,29 @@
+{% if assignment.archived %}
+    <div class="notice info">该作业已归档，保留附件、成绩及批改记录，停止提交与批改。</div>
+{% endif %}
+{% if current_user.role == 'TEACHER' %}
+    <details class="panel">
+        <summary>作业管理</summary>
+        {% if not assignment.archived %}
+            <form method="post" action="{{ url_for('final_stage.edit_assignment',id=assignment.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label for="edit-title">作业标题</label>
+                <input id="edit-title" name="title" required maxlength="200" value="{{ assignment.title }}">
+                <label for="edit-description">作业要求</label>
+                <textarea id="edit-description" name="description" required maxlength="20000">{{ assignment.description }}</textarea>
+                <label for="edit-due">截止时间（北京时间）</label>
+                <input id="edit-due" type="datetime-local" name="due_at" step="1" value="{{ assignment.due_at.strftime('%Y-%m-%dT%H:%M:%S') if assignment.due_at else '' }}" {% if assignment.due_at %}required{% endif %}>
+                <small>所属课程和班级保持不变。调整截止时间时须选择未来时间；保存后通知班级成员。</small>
+                <p>
+<button>保存作业信息</button>
+</p>
+            </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('final_stage.archive_assignment',id=assignment.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="{{ 'restore' if assignment.archived else 'archive' }}">
+            <p class="muted">{{ '恢复后按当前截止时间继续提交与批改。' if assignment.archived else '归档后从日常任务中移出，停止提交与批改，成绩和附件保留。' }}</p>
+            <button class="secondary">{{ '恢复作业' if assignment.archived else '归档作业' }}</button>
+        </form>
+    </details>
+{% endif %}

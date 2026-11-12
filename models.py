@@ -8,7 +8,7 @@ db = SQLAlchemy()
 
 
 def beijing_now():
-    """Store stage-two business times consistently as naive Beijing time."""
+    """Store business times consistently as naive Beijing time."""
     return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
 
 
@@ -17,6 +17,12 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False)
+    real_name = db.Column(db.String(40), nullable=False, default="", server_default="")
+    student_number = db.Column(db.String(32), unique=True, nullable=True)
+
+    @property
+    def display_name(self):
+        return self.real_name or self.username
 
 
 class Course(db.Model):
@@ -67,6 +73,7 @@ class Assignment(db.Model):
     course_id = db.Column(db.Integer, db.ForeignKey("course.id"), nullable=True)
     class_id = db.Column(db.Integer, db.ForeignKey("teaching_class.id"), nullable=True)
     due_at = db.Column(db.DateTime, nullable=True)
+    archived = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
 
     teacher = db.relationship("User", backref="assignments")
     course = db.relationship("Course", back_populates="assignments")
@@ -75,6 +82,7 @@ class Assignment(db.Model):
 
 
 class Submission(db.Model):
+    __table_args__ = (db.Index("ix_submission_assignment_student_id", "assignment_id", "student_id", "id"),)
     id = db.Column(db.Integer, primary_key=True)
     assignment_id = db.Column(db.Integer, db.ForeignKey("assignment.id"), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -82,5 +90,38 @@ class Submission(db.Model):
     original_name = db.Column(db.String(255), nullable=False)
     score = db.Column(db.Integer)
     comment = db.Column(db.Text)
+    review_state = db.Column(db.String(20), nullable=False, default="PENDING", server_default="PENDING")
+    return_reason = db.Column(db.Text)
+    redo_due_at = db.Column(db.DateTime)
+    reviewed_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, nullable=False, server_default=db.func.now())
     student = db.relationship("User", backref="submissions")
+
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    assignment_id = db.Column(db.Integer, db.ForeignKey("assignment.id"), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    is_read = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    assignment = db.relationship("Assignment")
+
+
+class ReviewEvent(db.Model):
+    """Append-only audit trail for grading and redo deadline changes."""
+    id = db.Column(db.Integer, primary_key=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey("submission.id"), nullable=False, index=True)
+    teacher_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    action = db.Column(db.String(24), nullable=False)
+    old_score = db.Column(db.Integer)
+    new_score = db.Column(db.Integer)
+    old_comment = db.Column(db.Text)
+    new_comment = db.Column(db.Text)
+    old_deadline = db.Column(db.DateTime)
+    new_deadline = db.Column(db.DateTime)
+    reason = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    teacher = db.relationship("User")
+    submission = db.relationship("Submission", backref=db.backref("review_events", order_by="ReviewEvent.id"))

@@ -1,0 +1,19 @@
+{% if sub.review_events %}
+    <details class="review-history">
+        <summary>批改与期限调整记录（{{ sub.review_events|length }}）</summary>
+        {% for event in sub.review_events|reverse %}
+            <div class="record">
+                <strong>{{ {'GRADE':'评分记录','RETURN':'退回记录','EXTEND':'延期记录'}[event.action] }}</strong>
+                <small>{{ event.teacher.display_name }} · {{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                {% if event.action == 'GRADE' %}
+                    <p>成绩：{{ event.old_score if event.old_score is not none else '未评分' }} → {{ event.new_score }} 分</p>
+                    <p class="details muted">原评语：{{ event.old_comment or '无' }}</p>
+                    <p class="details">新评语：{{ event.new_comment or '无' }}</p>
+                {% else %}
+                    <p class="details">原因：{{ event.reason }}</p>
+                    <p>重交期限：{{ event.old_deadline.strftime('%Y-%m-%d %H:%M') if event.old_deadline else '未设置' }} → {{ event.new_deadline.strftime('%Y-%m-%d %H:%M') if event.new_deadline else '未设置' }}</p>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </details>
+{% endif %}

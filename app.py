@@ -7,24 +7,33 @@ from secrets import token_urlsafe
 from uuid import uuid4
 
 from flask import Flask, abort, flash, redirect, render_template, request, send_from_directory, url_for
-from flask_login import LoginManager, current_user, login_required, login_user, logout_user
+from flask_login import LoginManager, current_user, login_required
 from sqlalchemy import inspect, or_, text
-from werkzeug.security import check_password_hash, generate_password_hash
+from sqlalchemy.orm import joinedload, selectinload
 
 from models import Assignment, Course, Enrollment, Submission, TeachingClass, User, beijing_now, db
+from models import Notification, ReviewEvent
+from security import csrf_token, protect_csrf, secret_key, valid_attachment
+from workflow import (assignment_status, can_submit, effective_submissions, latest_submission,
+                      notify, notify_assignment, submission_deadline, assignment_cards,
+                      filter_assignment_status, record_review)
 
 BASE_DIR = Path(__file__).resolve().parent
 ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "txt", "zip", "rar", "py", "java", "c", "cpp", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png"}
-STATUS_LABELS = {"PENDING": "待提交", "OVERDUE": "已逾期", "TO_GRADE": "待批改", "GRADED": "已评分"}
+STATUS_LABELS = {"PENDING": "待提交", "OVERDUE": "已逾期", "TO_GRADE": "待批改", "GRADED": "已评分", "RETURNED": "退回重做"}
 
 app = Flask(__name__)
 app.config.update(
-    SECRET_KEY=os.environ.get("SECRET_KEY", "coursework-demo-change-this-key"),
+    SECRET_KEY=secret_key(app.instance_path),
     SQLALCHEMY_DATABASE_URI=os.environ.get("HOMEWORK_DATABASE_URI", f"sqlite:///{BASE_DIR / 'homework.db'}"),
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
     UPLOAD_FOLDER=os.environ.get("HOMEWORK_UPLOAD_FOLDER", str(BASE_DIR / "uploads")),
     MAX_CONTENT_LENGTH=20 * 1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
 )
+app.before_request(protect_csrf)
+app.jinja_env.globals["csrf_token"] = csrf_token
 Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
 db.init_app(app)
 login_manager = LoginManager(app)
@@ -35,7 +44,37 @@ login_manager.login_message_category = "error"
 
 @login_manager.user_loader
 def load_user(user_id):
-    return db.session.get(User, int(user_id))
+    try:
+        return db.session.get(User, int(user_id))
+    except (ValueError, TypeError):
+        return None
+
+
+def migrate_final_schema():
+    columns = {column["name"] for column in inspect(db.engine).get_columns("submission")}
+    for name, declaration in (("review_state", "VARCHAR(20) NOT NULL DEFAULT 'PENDING'"),
+                              ("return_reason", "TEXT"), ("redo_due_at", "DATETIME"),
+                              ("reviewed_at", "DATETIME")):
+        if name not in columns:
+            db.session.execute(text(f"ALTER TABLE submission ADD COLUMN {name} {declaration}"))
+    if "review_state" not in columns:
+        db.session.execute(text("UPDATE submission SET review_state = 'GRADED' WHERE score IS NOT NULL"))
+    db.session.commit()
+
+
+def migrate_polish_schema():
+    additions = {
+        "user": (("real_name", "VARCHAR(40) NOT NULL DEFAULT ''"), ("student_number", "VARCHAR(32)")),
+        "assignment": (("archived", "BOOLEAN NOT NULL DEFAULT 0"),),
+    }
+    for table, fields in additions.items():
+        columns = {column["name"] for column in inspect(db.engine).get_columns(table)}
+        for name, declaration in fields:
+            if name not in columns:
+                db.session.execute(text(f'ALTER TABLE "{table}" ADD COLUMN {name} {declaration}'))
+    db.session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_student_number ON user (student_number)"))
+    db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_submission_assignment_student_id ON submission (assignment_id, student_id, id)"))
+    db.session.commit()
 
 
 def migrate_legacy_schema():
@@ -81,13 +120,28 @@ with app.app_context():
                 if not backup_path.exists():
                     with closing(sqlite3.connect(backup_path)) as target:
                         source.backup(target)
+            submission_columns = {row[1] for row in source.execute("PRAGMA table_info(submission)")}
+            if submission_columns and "review_state" not in submission_columns:
+                backup_path = Path(database_path).with_name(Path(database_path).name + ".stage2.bak")
+                if not backup_path.exists():
+                    with closing(sqlite3.connect(backup_path)) as target:
+                        source.backup(target)
+            user_columns = {row[1] for row in source.execute("PRAGMA table_info(user)")}
+            if user_columns and ("real_name" not in user_columns or "archived" not in columns):
+                backup_path = Path(database_path).with_name(Path(database_path).name + ".stage3.bak")
+                if not backup_path.exists():
+                    with closing(sqlite3.connect(backup_path)) as target:
+                        source.backup(target)
     db.create_all()
+    migrate_final_schema()
+    migrate_polish_schema()
     migrate_legacy_schema()
 
 
 @app.context_processor
 def inject_helpers():
-    return {"now": beijing_now, "status_labels": STATUS_LABELS}
+    unread = Notification.query.filter_by(user_id=current_user.id, is_read=False).count() if current_user.is_authenticated else 0
+    return {"now": beijing_now, "status_labels": STATUS_LABELS, "unread_count": unread}
 
 
 def parse_due_at(raw):
@@ -108,26 +162,8 @@ def student_can_view(assignment, student_id):
     return assignment.class_id is not None and is_enrolled(student_id, assignment.class_id)
 
 
-def latest_submission(assignment_id, student_id):
-    return Submission.query.filter_by(assignment_id=assignment_id, student_id=student_id).order_by(
-        Submission.created_at.desc(), Submission.id.desc()
-    ).first()
-
-
-def assignment_status(assignment, student_id):
-    submission = latest_submission(assignment.id, student_id)
-    if submission:
-        return "GRADED" if submission.score is not None else "TO_GRADE"
-    return "OVERDUE" if assignment.due_at and assignment.due_at <= beijing_now() else "PENDING"
-
-
 def assignment_card(assignment, student_id=None):
-    if student_id:
-        submission = latest_submission(assignment.id, student_id)
-        return {"assignment": assignment, "status": assignment_status(assignment, student_id), "submission": submission}
-    pending = Submission.query.filter_by(assignment_id=assignment.id, score=None).count()
-    total = Submission.query.filter_by(assignment_id=assignment.id).count()
-    return {"assignment": assignment, "pending_count": pending, "submission_count": total}
+    return assignment_cards([assignment], student_id)[0]
 
 
 def teacher_course(course_id):
@@ -149,51 +185,8 @@ def index():
     return redirect(url_for("dashboard" if current_user.is_authenticated else "login"))
 
 
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        role = request.form.get("role", "STUDENT")
-        if len(username) < 2 or len(username) > 40 or len(password) < 6:
-            flash("用户名需为 2-40 个字符，密码至少 6 位。", "error")
-            return redirect(url_for("register"))
-        elif role not in {"STUDENT", "TEACHER"}:
-            flash("请选择有效的账号角色。", "error")
-            return redirect(url_for("register"))
-        elif User.query.filter_by(username=username).first():
-            flash("该用户名已被使用。", "error")
-            return redirect(url_for("register"))
-        else:
-            db.session.add(User(username=username, password=generate_password_hash(password), role=role))
-            db.session.commit()
-            flash("注册成功，请登录。", "success")
-            return redirect(url_for("login"))
-    return render_template("register.html")
-
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        user = User.query.filter_by(username=request.form.get("username", "").strip()).first()
-        password = request.form.get("password", "")
-        if user and (check_password_hash(user.password, password) or user.password == password):
-            if user.password == password:
-                user.password = generate_password_hash(password)
-                db.session.commit()
-            login_user(user)
-            return redirect(url_for("dashboard"))
-        flash("用户名或密码不正确。", "error")
-        return redirect(url_for("login"))
-    return render_template("login.html")
-
-
-@app.route("/logout")
-@login_required
-def logout():
-    logout_user()
-    flash("已安全退出。", "success")
-    return redirect(url_for("login"))
+from accounts import register_account_routes
+register_account_routes(app)
 
 
 @app.route("/dashboard")
@@ -202,24 +195,24 @@ def dashboard():
     if current_user.role == "TEACHER":
         courses = Course.query.filter_by(teacher_id=current_user.id).all()
         classes = TeachingClass.query.filter_by(teacher_id=current_user.id).all()
-        assignments = Assignment.query.filter_by(teacher_id=current_user.id).all()
-        pending_grades = Submission.query.join(Assignment).filter(
-            Assignment.teacher_id == current_user.id, Submission.score.is_(None)
-        ).count()
-        pending_assignments = Assignment.query.join(Submission).filter(
-            Assignment.teacher_id == current_user.id, Submission.score.is_(None)
-        ).distinct().order_by(Assignment.id.desc()).all()
+        assignments = Assignment.query.filter_by(teacher_id=current_user.id, archived=False).all()
+        pending_cards = assignment_cards(assignments)
+        pending_cards = [c for c in pending_cards if c["pending_count"]]
+        pending_grades = sum(c["pending_count"] for c in pending_cards)
         return render_template("dashboard.html", courses=courses, classes=classes, assignments=assignments,
                                pending_grades=pending_grades,
-                               pending_cards=[assignment_card(a) for a in pending_assignments])
+                               pending_cards=pending_cards)
     enrollments = Enrollment.query.filter_by(student_id=current_user.id).all()
-    assignments = [a for a in Assignment.query.order_by(Assignment.id.desc()).all() if student_can_view(a, current_user.id)]
-    cards = [assignment_card(a, current_user.id) for a in assignments]
-    upcoming = sorted([c for c in cards if c["status"] == "PENDING" and c["assignment"].due_at
-                       and beijing_now() < c["assignment"].due_at <= beijing_now() + timedelta(days=3)],
-                      key=lambda c: c["assignment"].due_at)
+    enrolled_ids = [e.class_id for e in enrollments]
+    assignments = Assignment.query.filter(Assignment.class_id.in_(enrolled_ids), Assignment.archived.is_(False)).order_by(Assignment.id.desc()).all()
+    cards = assignment_cards(assignments, current_user.id)
+    for card in cards:
+        card["deadline"] = submission_deadline(card["assignment"], card["submission"])
+    upcoming = sorted([c for c in cards if c["status"] in {"PENDING", "RETURNED"} and c["deadline"]
+                       and beijing_now() < c["deadline"] <= beijing_now() + timedelta(days=3)],
+                      key=lambda c: c["deadline"])
     graded = sorted([c for c in cards if c["status"] == "GRADED"],
-                    key=lambda c: (c["submission"].created_at, c["submission"].id), reverse=True)[:5]
+                    key=lambda c: (c["submission"].reviewed_at or c["submission"].created_at, c["submission"].id), reverse=True)[:5]
     return render_template("dashboard.html", enrollments=enrollments, cards=cards, upcoming=upcoming, graded=graded)
 
 
@@ -242,8 +235,8 @@ def create_course():
         abort(403)
     name = request.form.get("name", "").strip()
     description = request.form.get("description", "").strip()
-    if not name or len(name) > 120:
-        flash("课程名称需为 1-120 个字符。", "error")
+    if not name or len(name) > 120 or len(description) > 10000:
+        flash("课程名称需为 1-120 个字符，简介最多 10000 字。", "error")
     else:
         db.session.add(Course(name=name, description=description, teacher_id=current_user.id))
         db.session.commit()
@@ -269,11 +262,12 @@ def course_detail(course_id):
 def edit_course(course_id):
     course = teacher_course(course_id)
     name = request.form.get("name", "").strip()
-    if not name or len(name) > 120:
-        flash("课程名称需为 1-120 个字符。", "error")
+    description = request.form.get("description", "").strip()
+    if not name or len(name) > 120 or len(description) > 10000:
+        flash("课程名称需为 1-120 个字符，简介最多 10000 字。", "error")
     else:
         course.name = name
-        course.description = request.form.get("description", "").strip()
+        course.description = description
         db.session.commit()
         flash("课程信息已更新。", "success")
     return redirect(url_for("course_detail", course_id=course.id))
@@ -315,6 +309,9 @@ def join_class():
         flash("你已经加入这个教学班。", "error")
     else:
         db.session.add(Enrollment(class_id=teaching_class.id, student_id=current_user.id))
+        for assignment in teaching_class.assignments:
+            if not assignment.archived:
+                notify_assignment(assignment, current_user.id)
         db.session.commit()
         flash(f"已加入 {teaching_class.course.name} · {teaching_class.name}。", "success")
     return redirect(url_for("dashboard"))
@@ -334,6 +331,7 @@ def assignment_list():
     course_id = request.args.get("course_id", type=int)
     class_id = request.args.get("class_id", type=int)
     status = request.args.get("status", "")
+    archived = request.args.get("archived") == "1"
     query = Assignment.query
     if current_user.role == "TEACHER":
         query = query.filter_by(teacher_id=current_user.id)
@@ -346,12 +344,11 @@ def assignment_list():
         query = query.filter_by(course_id=course_id)
     if class_id:
         query = query.filter_by(class_id=class_id)
-    assignments = query.order_by(Assignment.due_at.is_(None), Assignment.due_at.asc(), Assignment.id.desc()).all()
-    cards = [assignment_card(a, current_user.id if current_user.role == "STUDENT" else None) for a in assignments]
-    if status:
-        cards = [c for c in cards if (c.get("status") == status
-                 or (status == "SUBMITTED" and c.get("status") in {"TO_GRADE", "GRADED"})
-                 or (current_user.role == "TEACHER" and status == "TO_GRADE" and c["pending_count"] > 0))]
+    query = query.filter_by(archived=archived)
+    query = filter_assignment_status(query, status, current_user)
+    query = query.options(joinedload(Assignment.course), joinedload(Assignment.teaching_class), joinedload(Assignment.teacher))
+    page = query.order_by(Assignment.due_at.is_(None), Assignment.due_at.asc(), Assignment.id.desc()).paginate(per_page=12, error_out=False)
+    cards = assignment_cards(page.items, current_user.id if current_user.role == "STUDENT" else None)
     if current_user.role == "TEACHER":
         courses = Course.query.filter_by(teacher_id=current_user.id).all()
         classes = TeachingClass.query.filter_by(teacher_id=current_user.id).all()
@@ -359,8 +356,8 @@ def assignment_list():
         courses = Course.query.join(TeachingClass).join(Enrollment).filter(
             Enrollment.student_id == current_user.id).distinct().order_by(Course.id).all()
         classes = [e.teaching_class for e in Enrollment.query.filter_by(student_id=current_user.id).all()]
-    return render_template("assignment_list.html", cards=cards, assignments=[c["assignment"] for c in cards], courses=courses,
-                           classes=classes, filters={"q": keyword, "course_id": course_id, "class_id": class_id, "status": status})
+    return render_template("assignment_list.html", cards=cards, assignments=page.items, courses=courses, page=page,
+                           classes=classes, filters={"q": keyword, "course_id": course_id, "class_id": class_id, "status": status, "archived": "1" if archived else "0"})
 
 
 @app.route("/assignment/create", methods=["POST"])
@@ -373,7 +370,7 @@ def create_assignment():
     course_id = request.form.get("course_id", type=int)
     class_id = request.form.get("class_id", type=int)
     due_at = parse_due_at(request.form.get("due_at", ""))
-    if not title or len(title) > 200 or not description:
+    if not title or len(title) > 200 or not description or len(description) > 20000:
         flash("请填写 1-200 字的作业标题和作业要求。", "error")
     elif due_at == "invalid":
         flash("截止时间格式不正确。", "error")
@@ -387,11 +384,15 @@ def create_assignment():
         if teaching_class.course_id != course.id:
             flash("所选班级不属于该课程。", "error")
             return redirect(url_for("assignment_list"))
-        db.session.add(Assignment(title=title, description=description, teacher_id=current_user.id,
+        assignment = Assignment(title=title, description=description, teacher_id=current_user.id,
                                   course_id=course.id if course else None, class_id=teaching_class.id if teaching_class else None,
-                                  due_at=due_at))
+                                  due_at=due_at)
+        db.session.add(assignment)
+        db.session.flush()
+        notify_assignment(assignment)
         db.session.commit()
         flash("作业已发布。", "success")
+        return redirect(url_for("assignment_detail", id=assignment.id))
     return redirect(url_for("assignment_list"))
 
 
@@ -403,13 +404,27 @@ def assignment_detail(id):
         abort(403)
     if current_user.role == "STUDENT" and not student_can_view(assignment, current_user.id):
         abort(403)
-    query = Submission.query.filter_by(assignment_id=id)
+    query = Submission.query.options(joinedload(Submission.student),
+        selectinload(Submission.review_events).joinedload(ReviewEvent.teacher)).filter_by(assignment_id=id)
     if current_user.role == "STUDENT":
         query = query.filter_by(student_id=current_user.id)
-    submissions = query.order_by(Submission.created_at.desc(), Submission.id.desc()).all()
-    progress = [{"student": e.student, "status": assignment_status(assignment, e.student_id)}
-                for e in assignment.teaching_class.enrollments] if current_user.role == "TEACHER" and assignment.teaching_class else []
+    submissions = query.order_by(Submission.id.desc()).all()
+    current_query = effective_submissions().filter(Submission.assignment_id == id)
+    if current_user.role == "STUDENT":
+        current_query = current_query.filter_by(student_id=current_user.id)
+    active = {s.id for s in current_query.all()}
+    versions = {}
+    counts = {}
+    for sub in reversed(submissions):
+        counts[sub.student_id] = counts.get(sub.student_id, 0) + 1
+        versions[sub.id] = counts[sub.student_id]
+    latest = latest_submission(id, current_user.id) if current_user.role == "STUDENT" else None
+    from workflow import grade_rows
+    progress = [{"student": row["student"], "status": row["cells"][0]["status"]}
+                for row in grade_rows(assignment.teaching_class, [assignment])] if current_user.role == "TEACHER" and assignment.teaching_class else []
     return render_template("assignment_detail.html", assignment=assignment, submissions=submissions, progress=progress,
+                           active_ids=active, versions=versions, current_submission=latest,
+                           can_upload=can_submit(assignment, latest), deadline=submission_deadline(assignment, latest),
                            student_status=assignment_status(assignment, current_user.id) if current_user.role == "STUDENT" else None)
 
 
@@ -421,7 +436,8 @@ def submit_homework():
     assignment = db.get_or_404(Assignment, request.form.get("assignment_id", type=int))
     if not student_can_view(assignment, current_user.id):
         abort(403)
-    if assignment.due_at and assignment.due_at <= beijing_now():
+    previous = latest_submission(assignment.id, current_user.id)
+    if not can_submit(assignment, previous):
         flash("该作业已超过截止时间，系统不再接受提交。", "error")
         return redirect(url_for("assignment_detail", id=assignment.id))
     file = request.files.get("file")
@@ -431,12 +447,21 @@ def submit_homework():
         flash("请选择要提交的文件。", "error")
     elif suffix not in ALLOWED_EXTENSIONS:
         flash("暂不支持该文件类型，请上传文档、图片、代码或压缩包。", "error")
+    elif len(original_name) > 255 or any(ord(char) < 32 for char in original_name) or not valid_attachment(file, suffix):
+        flash("文件为空、内容与扩展名不符或文件名无效，请检查后重新上传。", "error")
     else:
         stored_name = f"{uuid4().hex}.{suffix}"
-        file.save(Path(app.config["UPLOAD_FOLDER"]) / stored_name)
-        db.session.add(Submission(assignment_id=assignment.id, student_id=current_user.id,
-                                  file_path=stored_name, original_name=original_name, created_at=beijing_now()))
-        db.session.commit()
+        stored_path = Path(app.config["UPLOAD_FOLDER"]) / stored_name
+        try:
+            file.save(stored_path)
+            db.session.add(Submission(assignment_id=assignment.id, student_id=current_user.id,
+                                      file_path=stored_name, original_name=original_name, created_at=beijing_now(),
+                                      redo_due_at=previous.redo_due_at if previous else None))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            stored_path.unlink(missing_ok=True)
+            raise
         flash("作业提交成功。再次提交会保留历史记录。", "success")
     return redirect(url_for("assignment_detail", id=assignment.id))
 
@@ -464,21 +489,51 @@ def grade_homework():
     assignment = db.session.get(Assignment, submission.assignment_id)
     if not assignment or assignment.teacher_id != current_user.id:
         abort(403)
+    if latest_submission(assignment.id, submission.student_id).id != submission.id:
+        abort(409, description="该提交已成为历史版本，请刷新页面批改当前有效版本。")
+    if submission.review_state == "RETURNED":
+        abort(409, description="该版本已退回，请等待学生重新提交。")
+    if assignment.archived:
+        abort(409, description="该作业已归档，请恢复后再批改。")
     score = request.form.get("score", type=int)
-    if score is None or not 0 <= score <= 100:
-        flash("分数必须在 0 到 100 之间。", "error")
+    if score is None or not 0 <= score <= 100 or len(request.form.get("comment", "")) > 2000:
+        flash("分数必须为 0-100 的整数，评语最多 2000 字。", "error")
     else:
+        record_review(submission, current_user.id, "GRADE", score=score, comment=request.form.get("comment", "").strip())
         submission.score = score
         submission.comment = request.form.get("comment", "").strip()
+        submission.review_state = "GRADED"
+        submission.reviewed_at = beijing_now()
+        notify(submission.student_id, assignment, "作业评分完成", f"{assignment.title}：{score} 分，请查看教师评语。")
         db.session.commit()
         flash("评分已保存。", "success")
     return redirect(url_for("assignment_detail", id=assignment.id))
 
 
-@app.errorhandler(413)
-def file_too_large(_error):
-    flash("文件不能超过 20 MB。", "error")
-    return redirect(request.referrer or url_for("assignment_list"))
+@app.after_request
+def security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def error_page(error):
+    messages = {400: "请求无效，或表单验证已失效，请刷新页面重试。", 403: "你没有权限访问此内容。",
+                404: "页面或文件不存在。", 405: "该操作不支持当前请求方式。", 409: "数据已更新，请刷新页面后重试。",
+                413: "文件及表单内容不能超过 20 MB。", 500: "服务暂时无法处理请求，请稍后重试。"}
+    if error.code == 500:
+        db.session.rollback()
+    message = error.description if error.code in {400, 409} else messages[error.code]
+    return render_template("error.html", code=error.code, message=message), error.code
+
+
+for error_code in (400, 403, 404, 405, 409, 413, 500):
+    app.register_error_handler(error_code, error_page)
+
+from final_stage import final_stage
+app.register_blueprint(final_stage)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="panel empty">
+<h1>{{ code }}</h1>
+<p>{{ message }}</p>
+<a class="button" href="{{ url_for('index') }}">返回{{ '工作台' if current_user.is_authenticated else '登录页' }}</a>
+</section>
+{% endblock %}

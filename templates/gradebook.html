@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar">
+<div>
+<h1>成绩册与统计</h1>
+<p class="muted">按当前有效版本统计；平均分仅计算已评分作业，包含 0 分。</p>
+</div>
+{% if selected %}<a class="button" href="{{ url_for('final_stage.export_grades',class_id=selected.id,assignment_id=assignment_id) }}">导出 CSV</a>
+{% endif %}</div>
+<form class="panel form-grid" method="get">
+<div>
+<label for="report-course">课程</label>
+<select id="report-course" name="course_id">
+<option value="">全部课程</option>
+{% for course in courses %}<option value="{{ course.id }}" {% if course_id == course.id %}selected{% endif %}>{{ course.name }}</option>
+{% endfor %}</select>
+</div>
+<div>
+<label for="report-class">教学班</label>
+<select id="report-class" name="class_id">
+<option value="">自动选择首个班级</option>
+{% for c in classes %}<option value="{{ c.id }}" data-course="{{ c.course_id }}" {% if selected and selected.id == c.id %}selected{% endif %}>{{ c.course.name }} · {{ c.name }}</option>
+{% endfor %}</select>
+</div>
+<div>
+<label for="report-assignment">作业</label>
+<select id="report-assignment" name="assignment_id">
+<option value="">该班全部作业</option>
+{% for a in all_assignments %}<option value="{{ a.id }}" {% if assignment_id == a.id %}selected{% endif %}>{{ a.title }}</option>
+{% endfor %}</select>
+</div>
+<div class="actions">
+<button>查看成绩</button>
+<a href="{{ url_for('final_stage.gradebook') }}">重置</a>
+</div>
+</form>
+{% if selected %}
+<section class="panel">
+<h2>{{ selected.course.name }} · {{ selected.name }}</h2>
+<div class="table-scroll">
+<table>
+<caption>班级成绩册</caption>
+<thead>
+<tr>
+<th scope="col">学生</th>
+{% for a in assignments %}<th scope="col">
+<a href="{{ url_for('assignment_detail',id=a.id) }}">{{ a.title }}</a>
+</th>
+{% endfor %}<th scope="col">已交 / 作业数</th>
+<th scope="col">已评分平均分</th>
+</tr>
+</thead>
+<tbody>
+{% for row in rows %}
+<tr>
+<th scope="row">{{ row.student.display_name }}<small>{{ row.student.username }} · {{ row.student.student_number or '未填写学号' }}</small>
+</th>
+{% for cell in row.cells %}<td>
+{% if cell.score is not none %}<strong>{{ cell.score }}</strong> 分{% else %}<span class="status {{ cell.status|lower }}">{{ status_labels[cell.status] }}</span>
+{% endif %}</td>
+{% endfor %}<td>{{ row.submitted }} / {{ assignments|length }}</td>
+<td>{{ row.average if row.average is not none else '—' }}</td>
+</tr>
+{% else %}
+<tr>
+<td colspan="{{ assignments|length + 3 }}" class="empty">该教学班还没有学生。</td>
+</tr>
+{% endfor %}</tbody>
+</table>
+</div>
+{% if not assignments %}
+<p class="muted">该班尚未发布作业。</p>
+{% endif %}</section>
+{% for stat in statistics %}
+<section class="panel">
+<div class="section-title">
+<h2>{{ stat.assignment.title }}</h2>
+<a href="{{ url_for('final_stage.export_grades',class_id=selected.id,assignment_id=stat.assignment.id) }}">导出本作业</a>
+</div>
+<div class="stats">
+<div class="stat">
+<strong>{{ stat.rate }}%</strong>
+<span>提交率 · {{ stat.submitted }} / {{ stat.members }}</span>
+</div>
+<div class="stat">
+<strong>{{ stat.missing }}</strong>
+<span>未交人数 · {{ stat.returned }} 人待重做</span>
+</div>
+<div class="stat">
+<strong>{{ stat.average if stat.average is not none else '—' }}</strong>
+<span>平均分 · {{ stat.graded }} 人已评分</span>
+</div>
+<div class="stat">
+<strong>{{ stat.highest if stat.highest is not none else '—' }} / {{ stat.lowest if stat.lowest is not none else '—' }}</strong>
+<span>最高 / 最低分</span>
+</div>
+</div>
+<h3>分数分布</h3>
+{% for bucket in stat.distribution %}
+<div class="distribution">
+<span>{{ bucket.label }} 分</span>
+<meter min="0" max="{{ [stat.graded,1]|max }}" value="{{ bucket.count }}">{{ bucket.count }} 人</meter>
+<span>{{ bucket.count }} 人</span>
+</div>
+{% endfor %}<small>提交率含已退回的提交；成绩统计排除待批改、退回和历史版本。</small>
+</section>
+{% endfor %}
+{% else %}
+<div class="panel empty">暂无教学班，请先<a href="{{ url_for('course_list') }}">创建课程和教学班</a>。</div>
+{% endif %}
+<script src="{{ url_for('static',filename='gradebook.js') }}" defer>
+</script>
+{% endblock %}

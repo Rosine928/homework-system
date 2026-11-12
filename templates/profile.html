@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="panel auth">
+    <h1>个人资料</h1>
+    <p class="muted">账号：{{ current_user.username }} · {{ '教师' if current_user.role == 'TEACHER' else '学生' }}</p>
+    {% if current_user.role == 'STUDENT' and not current_user.student_number %}
+        <p class="notice info">请补充姓名与学号，方便教师核对提交与成绩。</p>
+    {% endif %}
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="real-name">姓名</label>
+        <input id="real-name" name="real_name" maxlength="40" value="{{ request.form.get('real_name',current_user.real_name) }}" {% if current_user.role == 'STUDENT' %}required{% endif %} autocomplete="name">
+        {% if current_user.role == 'STUDENT' %}
+            <label for="student-number">学号</label>
+            <input id="student-number" name="student_number" minlength="2" maxlength="32" pattern="[A-Za-z0-9_-]{2,32}" value="{{ request.form.get('student_number',current_user.student_number or '') }}" required>
+            <small>2-32 位，可使用字母、数字、下划线或短横线。学号不可与其他账号重复。</small>
+        {% endif %}
+        <p>
+<button>保存资料</button>
+</p>
+    </form>
+</section>
+{% endblock %}

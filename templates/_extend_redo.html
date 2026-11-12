@@ -1,0 +1,17 @@
+{% if current_user.role == 'TEACHER' and active and sub.review_state == 'RETURNED' and not assignment.archived %}
+    <details class="redo">
+        <summary>延长重交期限</summary>
+        <form method="post" action="{{ url_for('final_stage.extend_redo',id=sub.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label for="extend-reason-{{ sub.id }}">延期原因</label>
+            <textarea id="extend-reason-{{ sub.id }}" name="reason" required maxlength="2000">
+</textarea>
+            <label for="extend-due-{{ sub.id }}">新的重交截止时间（北京时间）</label>
+            <input id="extend-due-{{ sub.id }}" type="datetime-local" name="redo_due_at" required>
+            <small>须晚于当前时间和原重交期限；保存后通知该学生并保留调整记录。</small>
+            <p>
+<button class="secondary">延长重交期限</button>
+</p>
+        </form>
+    </details>
+{% endif %}

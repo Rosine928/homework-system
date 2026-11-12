@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar">
+<div>
+<h1>我的成绩</h1>
+<p class="muted">查看当前版本的成绩、教师评语与课程成绩变化。</p>
+</div>
+</div>
+<form class="panel form-grid" method="get">
+<div>
+<label for="my-course">课程</label>
+<select name="course_id" id="my-course">
+<option value="">全部课程</option>
+{% for course in courses %}<option value="{{ course.id }}" {% if course_id == course.id %}selected{% endif %}>{{ course.name }}</option>
+{% endfor %}</select>
+</div>
+<div class="actions">
+<button>查询</button>
+</div>
+</form>
+{% for report in reports %}
+<section class="panel">
+<div class="section-title">
+<h2>{{ report.course.name }}</h2>
+<span class="status">已评分平均分：{{ report.average if report.average is not none else '暂无' }}</span>
+</div>
+<div class="table-scroll">
+<table>
+<caption>个人作业成绩与反馈</caption>
+<thead>
+<tr>
+<th>作业 / 班级</th>
+<th>状态</th>
+<th>成绩</th>
+<th>教师反馈</th>
+</tr>
+</thead>
+<tbody>
+{% for cell in report.cells %}
+<tr>
+<th scope="row">
+<a href="{{ url_for('assignment_detail',id=cell.assignment.id) }}">{{ cell.assignment.title }}</a>
+<small>{{ cell.assignment.teaching_class.name }}</small>
+</th>
+<td>
+<span class="status {{ cell.status|lower }}">{{ status_labels[cell.status] }}</span>
+</td>
+<td>{{ cell.score if cell.score is not none else '—' }}</td>
+<td class="details">{{ (cell.submission.return_reason if cell.status == 'RETURNED' else cell.submission.comment) or '暂无反馈' if cell.submission else '暂无反馈' }}</td>
+</tr>
+{% else %}
+<tr>
+<td colspan="4" class="empty">本课程还没有作业。</td>
+</tr>
+{% endfor %}</tbody>
+</table>
+</div>
+<h3>成绩变化</h3>
+<small>按当前有效版本的评分时间排列；重新提交和退回的旧成绩不计入。</small>
+{% for cell in report.graded %}
+<div class="trend-row">
+<span>{{ cell.assignment.title }}<small>{{ (cell.submission.reviewed_at or cell.submission.created_at).strftime('%m-%d %H:%M') }}</small>
+</span>
+<meter min="0" max="100" value="{{ cell.score }}">{{ cell.score }} 分</meter>
+<strong>{{ cell.score }} 分{% if not loop.first %}{% set delta = cell.score - report.graded[loop.index0 - 1].score %}<small>较上次 {{ '+' if delta > 0 else '' }}{{ delta }}</small>
+{% endif %}</strong>
+</div>
+{% else %}
+<div class="empty">暂无已评分记录。</div>
+{% endfor %}</section>
+{% else %}
+<div class="panel empty">暂无课程成绩，请先<a href="{{ url_for('course_list') }}">加入教学班</a>。</div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar">
+<div>
+<h1>站内通知</h1>
+<p class="muted">新作业、评分和退回重做消息 · {{ unread_count }} 条未读</p>
+</div>
+<form method="post" action="{{ url_for('final_stage.read_all_notifications') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button>全部标为已读</button>
+</form>
+</div>
+<div class="actions">
+<a href="{{ url_for('final_stage.notifications') }}" {% if not unread_only %}aria-current="page"{% endif %}>全部消息</a>
+<a href="{{ url_for('final_stage.notifications',unread=1) }}" {% if unread_only %}aria-current="page"{% endif %}>仅未读</a>
+</div>
+<section class="panel">
+{% for item in page.items %}
+<article class="record">
+<div class="section-title">
+<h2>{{ item.title }}</h2>
+<span class="status">{{ '已读' if item.is_read else '未读' }}</span>
+</div>
+<p class="details">{{ item.message }}</p>
+<p class="muted">{{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+<form method="post" action="{{ url_for('final_stage.read_notification',id=item.id) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button class="secondary">查看作业{{ '并标为已读' if not item.is_read else '' }}</button>
+</form>
+</article>
+{% else %}
+<div class="empty">{{ '暂无未读消息。' if unread_only else '暂无通知，新作业和批改消息将出现在这里。' }}</div>
+{% endfor %}</section>
+<div class="actions">
+{% if page.has_prev %}<a href="{{ url_for('final_stage.notifications',page=page.prev_num,unread=1 if unread_only else 0) }}">上一页</a>
+{% endif %}<span class="muted">第 {{ page.page }} 页 · 共 {{ page.total }} 条</span>
+{% if page.has_next %}<a href="{{ url_for('final_stage.notifications',page=page.next_num,unread=1 if unread_only else 0) }}">下一页</a>
+{% endif %}</div>
+{% endblock %}

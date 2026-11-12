@@ -1,0 +1,7 @@
+<nav class="pagination" aria-label="作业分页">
+    {% if page.has_prev %}<a href="{{ url_for('assignment_list',page=page.prev_num,**filters) }}">上一页</a>
+{% endif %}
+    <span>第 {{ page.page }} / {{ [page.pages,1]|max }} 页 · 共 {{ page.total }} 项 · 每页 12 项</span>
+    {% if page.has_next %}<a href="{{ url_for('assignment_list',page=page.next_num,**filters) }}">下一页</a>
+{% endif %}
+</nav>

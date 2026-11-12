@@ -1,14 +1,104 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="toolbar"><div><h1>课程作业</h1><span class="muted">查看任务、提交成果、跟进反馈</span></div><span class="muted">{{ cards|length }} 项作业</span></div>
+<div class="toolbar">
+<div>
+<h1>课程作业</h1>
+<span class="muted">查看任务、提交成果、跟进反馈</span>
+</div>
+<span class="muted">{{ page.total }} 项作业</span>
+</div>
 {% if current_user.role == 'TEACHER' %}
-<details class="panel"><summary>＋ 发布新作业</summary>
-{% if classes %}<form method="post" action="{{ url_for('create_assignment') }}">
-<div class="form-grid"><div><label for="create-course">所属课程</label><select id="create-course" name="course_id" required><option value="">请选择课程</option>{% for course in courses %}<option value="{{ course.id }}">{{ course.name }}</option>{% endfor %}</select></div><div><label for="create-class">教学班</label><select id="create-class" name="class_id" required><option value="">请选择教学班</option>{% for c in classes %}<option value="{{ c.id }}" data-course="{{ c.course_id }}">{{ c.course.name }} · {{ c.name }}</option>{% endfor %}</select></div></div>
-<label>作业标题</label><input name="title" maxlength="200" required><label>作业要求</label><textarea name="description" required></textarea><label>截止时间（北京时间）</label><input type="datetime-local" name="due_at" required><small>截止后禁止提交；截止前可以再次提交，原有记录会保留。</small><p><button>发布作业</button></p></form>
-{% else %}<p class="muted">发布作业前请先<a href="{{ url_for('course_list') }}">创建课程和教学班</a>。</p>{% endif %}</details>
+<details class="panel">
+<summary>＋ 发布新作业</summary>
+{% if classes %}
+<form method="post" action="{{ url_for('create_assignment') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="form-grid">
+<div>
+<label for="create-course">所属课程</label>
+<select id="create-course" name="course_id" required>
+<option value="">请选择课程</option>
+{% for course in courses %}<option value="{{ course.id }}">{{ course.name }}</option>
+{% endfor %}</select>
+</div>
+<div>
+<label for="create-class">教学班</label>
+<select id="create-class" name="class_id" required>
+<option value="">请选择教学班</option>
+{% for c in classes %}<option value="{{ c.id }}" data-course="{{ c.course_id }}">{{ c.course.name }} · {{ c.name }}</option>
+{% endfor %}</select>
+</div>
+</div>
+<label>作业标题</label>
+<input name="title" maxlength="200" required>
+<label>作业要求</label>
+<textarea name="description" required>
+</textarea>
+<label>截止时间（北京时间）</label>
+<input type="datetime-local" name="due_at" required>
+<small>截止后禁止提交；截止前可以再次提交，原有记录会保留。</small>
+<p>
+<button>发布作业</button>
+</p>
+</form>
+{% else %}
+<p class="muted">发布作业前请先<a href="{{ url_for('course_list') }}">创建课程和教学班</a>。</p>
+{% endif %}</details>
 {% endif %}
-<form class="panel filters" method="get"><div><label>关键词</label><input name="q" value="{{ filters.q }}" placeholder="搜索标题或要求"></div><div><label>课程</label><select name="course_id"><option value="">全部课程</option>{% for c in courses %}<option value="{{ c.id }}" {% if filters.course_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div><div><label>教学班</label><select name="class_id"><option value="">全部班级</option>{% for c in classes %}<option value="{{ c.id }}" {% if filters.class_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div><div><label>状态</label><select name="status"><option value="">全部状态</option>{% if current_user.role == 'STUDENT' %}{% for code,label in status_labels.items() %}<option value="{{ code }}" {% if filters.status == code %}selected{% endif %}>{{ label }}</option>{% endfor %}<option value="SUBMITTED" {% if filters.status == 'SUBMITTED' %}selected{% endif %}>已提交（含待批改、已评分）</option>{% else %}<option value="TO_GRADE" {% if filters.status == 'TO_GRADE' %}selected{% endif %}>有待批改提交</option>{% endif %}</select></div><button>查询</button><a href="{{ url_for('assignment_list') }}">重置</a></form>
-{% for card in cards %}{% set a = card.assignment %}<a class="item" href="{{ url_for('assignment_detail',id=a.id) }}"><div class="section-title"><h2>{{ a.title }}</h2>{% if current_user.role == 'STUDENT' %}<span class="status {{ card.status|lower }}">{{ '已提交 · ' if card.submission else '' }}{{ status_labels[card.status] }}</span>{% else %}<span class="status">{{ card.pending_count }} 份待批改</span>{% endif %}</div><p class="muted">{{ a.description|truncate(160) }}</p><div class="meta"><span>{{ a.course.name if a.course else '历史课程' }} · {{ a.teaching_class.name if a.teaching_class else '待归档' }}</span><span>截止：{{ a.due_at.strftime('%Y-%m-%d %H:%M') if a.due_at else '历史作业未设置' }}</span><span>{{ a.teacher.username }}</span></div></a>{% else %}<div class="panel empty">没有符合条件的作业。{% if current_user.role == 'STUDENT' %}请先加入教学班，或调整筛选条件。{% endif %}</div>{% endfor %}
-{% if current_user.role == 'TEACHER' %}<script src="{{ url_for('static',filename='assignment.js') }}" defer></script>{% endif %}
+<div class="actions">
+<a href="{{ url_for('assignment_list') }}">进行中的作业</a>
+<a href="{{ url_for('assignment_list',archived=1) }}">已归档作业</a>
+</div>
+<form class="panel filters" method="get">
+<input type="hidden" name="archived" value="{{ filters.archived }}">
+<div>
+<label>关键词</label>
+<input name="q" value="{{ filters.q }}" placeholder="搜索标题或要求">
+</div>
+<div>
+<label>课程</label>
+<select name="course_id">
+<option value="">全部课程</option>
+{% for c in courses %}<option value="{{ c.id }}" {% if filters.course_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+{% endfor %}</select>
+</div>
+<div>
+<label>教学班</label>
+<select name="class_id">
+<option value="">全部班级</option>
+{% for c in classes %}<option value="{{ c.id }}" {% if filters.class_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+{% endfor %}</select>
+</div>
+<div>
+<label>状态</label>
+<select name="status">
+<option value="">全部状态</option>
+{% if current_user.role == 'STUDENT' %}{% for code,label in status_labels.items() %}<option value="{{ code }}" {% if filters.status == code %}selected{% endif %}>{{ label }}</option>
+{% endfor %}<option value="SUBMITTED" {% if filters.status == 'SUBMITTED' %}selected{% endif %}>已提交（含待批改、已评分、退回）</option>
+{% else %}<option value="TO_GRADE" {% if filters.status == 'TO_GRADE' %}selected{% endif %}>有待批改提交</option>
+{% endif %}</select>
+</div>
+<button>查询</button>
+<a href="{{ url_for('assignment_list') }}">重置</a>
+</form>
+{% for card in cards %}{% set a = card.assignment %}<a class="item" href="{{ url_for('assignment_detail',id=a.id) }}">
+<div class="section-title">
+<h2>{{ a.title }}{% if a.archived %} · 已归档{% endif %}</h2>
+{% if current_user.role == 'STUDENT' %}<span class="status {{ card.status|lower }}">{{ '已提交 · ' if card.submission else '' }}{{ status_labels[card.status] }}</span>
+{% else %}<span class="status">{{ card.pending_count }} 份待批改</span>
+{% endif %}</div>
+<p class="muted">{{ a.description|truncate(160) }}</p>
+<div class="meta">
+<span>{{ a.course.name if a.course else '历史课程' }} · {{ a.teaching_class.name if a.teaching_class else '待归档' }}</span>
+<span>截止：{{ a.due_at.strftime('%Y-%m-%d %H:%M') if a.due_at else '历史作业未设置' }}</span>
+<span>{{ a.teacher.username }}</span>
+</div>
+</a>
+{% else %}
+<div class="panel empty">没有符合条件的作业。{% if current_user.role == 'STUDENT' %}请先加入教学班，或调整筛选条件。{% endif %}</div>
+{% endfor %}
+{% include '_pagination.html' %}
+{% if current_user.role == 'TEACHER' %}<script src="{{ url_for('static',filename='assignment.js') }}" defer>
+</script>
+{% endif %}
 {% endblock %}

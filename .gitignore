@@ -2,8 +2,14 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
 env/
 instance/
 homework.db
+*.db.stage1.bak
+*.db.stage2.bak
+*.db.stage3.bak
+artifacts/
+server.*.log
 uploads/*
 !uploads/.gitkeep
