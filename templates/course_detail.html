@@ -5,8 +5,16 @@
 <h1>{{ course.name }}</h1>
 <p class="details">{{ course.description or '暂无课程简介' }}</p>
 <span class="muted">授课教师：{{ course.teacher.username }}</span>
-</section>
+{% if course.archived %}<p class="notice info">课程已归档，停止加入、发布、提交和批改，历史资料与成绩保留。</p>{% endif %}
 {% if current_user.role == 'TEACHER' %}
+<form method="post" action="{{ url_for('management.archive_course',id=course.id) }}" data-confirm="确认更改课程归档状态？">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="{{ 'restore' if course.archived else 'archive' }}">
+<p><button class="secondary">{{ '恢复课程' if course.archived else '归档课程' }}</button></p>
+</form>
+{% endif %}
+</section>
+{% if current_user.role == 'TEACHER' and not course.archived %}
 <details class="panel" open>
 <summary>＋ 创建教学班</summary>
 <form method="post" action="{{ url_for('create_class') }}">
@@ -44,9 +52,23 @@
 <strong>{{ teaching_class.name }}</strong>
 <span class="code">{{ teaching_class.join_code }}</span>
 </div>
-<span class="muted">{{ teaching_class.enrollments|length }} 名学生</span>
+<span class="muted">{{ teaching_class.enrollments|selectattr('active')|list|length }} 名在班学生</span>
 {% if current_user.role == 'TEACHER' %}<a href="{{ url_for('class_members',class_id=teaching_class.id) }}">查看成员</a>
 {% endif %}</div>
+{% if teaching_class.archived %}<p class="muted">班级已归档，历史资料与成绩保留。</p>{% endif %}
+{% if current_user.role == 'TEACHER' %}
+<details class="record"><summary>管理 {{ teaching_class.name }}</summary>
+<form method="post" action="{{ url_for('management.manage_class',id=teaching_class.id) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="rename">
+<label for="class-name-{{ teaching_class.id }}">班级名称</label><input id="class-name-{{ teaching_class.id }}" name="name" required maxlength="120" value="{{ teaching_class.name }}">
+<p><button>保存班级名称</button></p></form>
+<form class="actions" method="post" action="{{ url_for('management.manage_class',id=teaching_class.id) }}" data-confirm="确认调整班级设置？重置后旧加入码立即失效。">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button class="secondary" name="action" value="rotate">重置加入码</button>
+<button class="secondary" name="action" value="{{ 'close' if teaching_class.join_enabled else 'open' }}">{{ '关闭加入' if teaching_class.join_enabled else '开放加入' }}</button>
+<button class="secondary" name="action" value="{{ 'restore' if teaching_class.archived else 'archive' }}">{{ '恢复班级' if teaching_class.archived else '归档班级' }}</button>
+</form></details>
+{% endif %}
 {% else %}
 <div class="empty">暂无教学班。</div>
 {% endfor %}</section>

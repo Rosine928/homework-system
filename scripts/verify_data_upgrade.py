@@ -18,7 +18,7 @@ def snapshots(connection):
     tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
     for (table,) in tables:
         columns = [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
-        sql = 'SELECT ' + ','.join(f'"{column}"' for column in columns) + f' FROM "{table}" ORDER BY id'
+        sql = 'SELECT ' + ','.join(f'"{column}"' for column in columns) + f' FROM "{table}" ORDER BY "{columns[0]}"'
         result[table] = (columns, connection.execute(sql).fetchall())
     return result
 
@@ -33,19 +33,22 @@ with closing(sqlite3.connect(database)) as connection:
 files = upload_hashes()
 
 from app import app, migrate_polish_schema
+from migrations import upgrade_email_schema
 from models import User, db
 
 with app.app_context():
     migrate_polish_schema()
     migrate_polish_schema()
-    users = [(u.id, u.role) for u in User.query.all()]
+    upgrade_email_schema()
+    upgrade_email_schema()
+    users = [(u.id, u.role, u.auth_version) for u in User.query.filter_by(enabled=True).all()]
     db.session.remove()
 
 pages = 0
-for user_id, role in users:
+for user_id, role, version in users:
     client = app.test_client()
     with client.session_transaction() as session:
-        session["_user_id"] = str(user_id)
+        session["_user_id"] = f"{user_id}:{version}"
         session["_fresh"] = True
     for route in ("/dashboard", "/assignment/list", "/assignment/list?archived=1", "/profile", "/notifications",
                   "/gradebook" if role == "TEACHER" else "/my-grades"):
@@ -57,14 +60,18 @@ with app.app_context():
     db.engine.dispose()
 with closing(sqlite3.connect(database)) as connection:
     for table, (columns, rows) in original.items():
-        sql = 'SELECT ' + ','.join(f'"{column}"' for column in columns) + f' FROM "{table}" ORDER BY id'
-        assert connection.execute(sql).fetchall() == rows, f"Original values changed: {table}"
+        sql = 'SELECT ' + ','.join(f'"{column}"' for column in columns) + f' FROM "{table}" ORDER BY "{columns[0]}"'
+        current = connection.execute(sql).fetchall()
+        if table == 'schema_migration':
+            original_ids = {row[0] for row in rows}
+            current = [row for row in current if row[0] in original_ids]
+        assert current == rows, f"Original values changed: {table}"
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 assert upload_hashes() == files, "Uploaded files changed"
-assert (root / "homework.db.stage3.bak").is_file()
+assert (root / "homework.db.stage5.bak").is_file()
 report = {"preserved_rows": {table: len(values[1]) for table, values in original.items()},
           "unchanged_uploads": len(files), "authenticated_pages": pages, "integrity": "ok",
-          "backup": "homework.db.stage3.bak"}
+          "backup": "homework.db.stage5.bak"}
 (root / "artifacts").mkdir(exist_ok=True)
 (root / "artifacts" / "upgrade-results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 print(json.dumps(report))

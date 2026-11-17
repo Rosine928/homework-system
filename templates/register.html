@@ -12,13 +12,18 @@
                 <label for="register-username">用户名</label>
                 <input id="register-username" name="username" required minlength="2" maxlength="40" value="{{ request.form.get('username','') }}" autocomplete="username">
                 <label for="register-password">密码</label>
-                <input id="register-password" type="password" name="password" required minlength="6" maxlength="128" autocomplete="new-password">
-                <small>密码需为 6-128 位。</small>
+                <input id="register-password" type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password">
+                <small>密码需为 8-128 位。</small>
                 <label for="account-role">身份</label>
                 <select id="account-role" name="role">
                     <option value="STUDENT">学生</option>
                     <option value="TEACHER" {% if request.form.get('role') == 'TEACHER' %}selected{% endif %}>教师</option>
                 </select>
+                <div class="teacher-field" {% if request.form.get('role') != 'TEACHER' %}hidden{% endif %}>
+                    <label for="teacher-code">教师邀请码</label>
+                    <input id="teacher-code" name="teacher_code" type="password" maxlength="200" autocomplete="off">
+                    <small>教师注册需由系统维护人员提供邀请码，也可联系维护人员直接创建账号。</small>
+                </div>
                 <label for="real-name">姓名</label>
                 <input id="real-name" name="real_name" maxlength="40" value="{{ request.form.get('real_name','') }}" autocomplete="name" required>
                 <div class="student-field">

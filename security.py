@@ -50,3 +50,8 @@ def valid_attachment(file, suffix):
     if suffix in signatures:
         return prefix.startswith(signatures[suffix])
     return b"\x00" not in prefix
+
+
+def require_revision(record):
+    if request.form.get("revision", type=int) != record.revision:
+        abort(409, description="数据已被其他页面更新或表单已过期，请刷新后重试。")

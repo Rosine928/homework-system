@@ -19,6 +19,17 @@ class User(UserMixin, db.Model):
     role = db.Column(db.String(20), nullable=False)
     real_name = db.Column(db.String(40), nullable=False, default="", server_default="")
     student_number = db.Column(db.String(32), unique=True, nullable=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
+    auth_version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
+    email = db.Column(db.String(254), unique=True, nullable=True)
+    email_verified_at = db.Column(db.DateTime)
+
+    @property
+    def is_active(self):
+        return self.enabled
+
+    def get_id(self):
+        return f"{self.id}:{self.auth_version}"
 
     @property
     def display_name(self):
@@ -31,6 +42,7 @@ class Course(db.Model):
     description = db.Column(db.Text, nullable=False, default="")
     teacher_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    archived = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
 
     teacher = db.relationship("User", backref=db.backref("courses", lazy=True))
     classes = db.relationship("TeachingClass", back_populates="course", cascade="all, delete-orphan")
@@ -45,6 +57,8 @@ class TeachingClass(db.Model):
     course_id = db.Column(db.Integer, db.ForeignKey("course.id"), nullable=False)
     teacher_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    archived = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
+    join_enabled = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
 
     course = db.relationship("Course", back_populates="classes")
     teacher = db.relationship("User", backref=db.backref("teaching_classes", lazy=True))
@@ -58,6 +72,7 @@ class Enrollment(db.Model):
     class_id = db.Column(db.Integer, db.ForeignKey("teaching_class.id"), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     joined_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    active = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
     __table_args__ = (UniqueConstraint("class_id", "student_id", name="uq_enrollment_class_student"),)
 
     teaching_class = db.relationship("TeachingClass", back_populates="enrollments")
@@ -74,6 +89,11 @@ class Assignment(db.Model):
     class_id = db.Column(db.Integer, db.ForeignKey("teaching_class.id"), nullable=True)
     due_at = db.Column(db.DateTime, nullable=True)
     archived = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
+    revision = db.Column(db.Integer, nullable=False, default=1, server_default="1")
+    reference_path = db.Column(db.String(255))
+    reference_name = db.Column(db.String(255))
+    rubric = db.Column(db.Text, nullable=False, default="", server_default="")
+    __mapper_args__ = {"version_id_col": revision}
 
     teacher = db.relationship("User", backref="assignments")
     course = db.relationship("Course", back_populates="assignments")
@@ -82,7 +102,8 @@ class Assignment(db.Model):
 
 
 class Submission(db.Model):
-    __table_args__ = (db.Index("ix_submission_assignment_student_id", "assignment_id", "student_id", "id"),)
+    __table_args__ = (db.Index("ix_submission_assignment_student_id", "assignment_id", "student_id", "id"),
+                      UniqueConstraint("student_id", "request_token", name="uq_submission_request"))
     id = db.Column(db.Integer, primary_key=True)
     assignment_id = db.Column(db.Integer, db.ForeignKey("assignment.id"), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -95,6 +116,9 @@ class Submission(db.Model):
     redo_due_at = db.Column(db.DateTime)
     reviewed_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, nullable=False, server_default=db.func.now())
+    revision = db.Column(db.Integer, nullable=False, default=1, server_default="1")
+    request_token = db.Column(db.String(64))
+    __mapper_args__ = {"version_id_col": revision}
     student = db.relationship("User", backref="submissions")
 
 
@@ -125,3 +149,36 @@ class ReviewEvent(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
     teacher = db.relationship("User")
     submission = db.relationship("Submission", backref=db.backref("review_events", order_by="ReviewEvent.id"))
+
+
+class SchemaMigration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    applied_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+
+
+class AccountEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    action = db.Column(db.String(40), nullable=False)
+    details = db.Column(db.Text, nullable=False, default="")
+    created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)
+
+
+class LoginAttempt(db.Model):
+    key = db.Column(db.String(64), primary_key=True)
+    failures = db.Column(db.Integer, nullable=False, default=0)
+    window_started = db.Column(db.DateTime, nullable=False, default=beijing_now)
+    locked_until = db.Column(db.DateTime)
+
+
+class EmailChallenge(db.Model):
+    """Separate, expiring email challenges for binding and password reset."""
+    key = db.Column(db.String(64), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    purpose = db.Column(db.String(10), nullable=False)
+    email = db.Column(db.String(254), nullable=False)
+    token_hash = db.Column(db.String(64), nullable=False)
+    auth_version = db.Column(db.Integer, nullable=False)
+    failures = db.Column(db.Integer, nullable=False, default=0)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=beijing_now)

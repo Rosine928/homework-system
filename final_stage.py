@@ -5,9 +5,13 @@ from datetime import datetime
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy import or_
+from sqlalchemy.orm import joinedload
 
-from models import Assignment, Course, Enrollment, Notification, Submission, TeachingClass, beijing_now, db
+from models import Assignment, Course, Enrollment, Notification, Submission, TeachingClass, User, beijing_now, db
+from security import require_revision
 from workflow import (assignment_statistics, grade_rows, latest_submission, notify, record_review)
+from workflow import deadline_label, teaching_open, class_statistics, assignment_cards
 
 final_stage = Blueprint("final_stage", __name__)
 
@@ -43,8 +47,9 @@ def return_submission(id):
         abort(409, description="该提交已成为历史版本，请刷新页面操作当前有效版本。")
     if submission.review_state == "RETURNED":
         abort(409, description="该版本已退回，请等待学生重新提交。")
-    if assignment.archived:
+    if not teaching_open(assignment):
         abort(409, description="该作业已归档，请恢复后操作。")
+    require_revision(submission)
     reason = request.form.get("reason", "").strip()
     raw_deadline = request.form.get("redo_due_at", "")
     try:
@@ -62,7 +67,7 @@ def return_submission(id):
         submission.redo_due_at = deadline
         submission.reviewed_at = beijing_now()
         notify(submission.student_id, assignment, "作业退回重做",
-               f"{assignment.title}：{reason}；重交截止：{deadline:%Y-%m-%d %H:%M}。")
+               f"{assignment.title}：{reason}；实际可提交至：{deadline_label(assignment, submission)}。")
         db.session.commit()
         flash("作业已退回，学生已收到重做通知。", "success")
     return redirect(url_for("assignment_detail", id=assignment.id))
@@ -80,8 +85,9 @@ def owned_assignment(id):
 def extend_redo(id):
     submission = db.get_or_404(Submission, id)
     assignment = owned_assignment(submission.assignment_id)
-    if assignment.archived or latest_submission(assignment.id, submission.student_id).id != id or submission.review_state != "RETURNED":
+    if not teaching_open(assignment) or latest_submission(assignment.id, submission.student_id).id != id or submission.review_state != "RETURNED":
         abort(409, description="仅可为未归档作业的当前退回版本调整重交期限。")
+    require_revision(submission)
     reason = request.form.get("reason", "").strip()
     try:
         deadline = datetime.fromisoformat(request.form.get("redo_due_at", ""))
@@ -94,7 +100,7 @@ def extend_redo(id):
     else:
         record_review(submission, current_user.id, "EXTEND", deadline=deadline, reason=reason)
         submission.redo_due_at = deadline
-        notify(submission.student_id, assignment, "重交期限延长", f"{assignment.title}：延期至 {deadline:%Y-%m-%d %H:%M}。原因：{reason}")
+        notify(submission.student_id, assignment, "重交期限延长", f"{assignment.title}：实际可提交至 {deadline_label(assignment, submission)}。原因：{reason}")
         db.session.commit()
         flash("重交期限已延长，学生已收到通知。", "success")
     return redirect(url_for("assignment_detail", id=assignment.id))
@@ -104,7 +110,8 @@ def extend_redo(id):
 @login_required
 def edit_assignment(id):
     assignment = owned_assignment(id)
-    if assignment.archived:
+    require_revision(assignment)
+    if not teaching_open(assignment):
         abort(409, description="请先恢复归档作业，再修改内容。")
     title = request.form.get("title", "").strip()
     description = request.form.get("description", "").strip()
@@ -126,6 +133,8 @@ def edit_assignment(id):
     else:
         assignment.title, assignment.description, assignment.due_at = title, description, due_at
         for enrollment in assignment.teaching_class.enrollments:
+            if not enrollment.active:
+                continue
             notify(enrollment.student_id, assignment, "作业信息更新", f"{title}：教师更新了作业内容或截止时间，请查看最新要求。")
         db.session.commit()
         flash("作业信息已更新，并已通知班级成员。", "success")
@@ -136,6 +145,7 @@ def edit_assignment(id):
 @login_required
 def archive_assignment(id):
     assignment = owned_assignment(id)
+    require_revision(assignment)
     action = request.form.get("action")
     if action not in {"archive", "restore"}:
         abort(400, description="请选择归档或恢复操作。")
@@ -143,6 +153,8 @@ def archive_assignment(id):
     if assignment.archived != target:
         assignment.archived = target
         for enrollment in assignment.teaching_class.enrollments:
+            if not enrollment.active:
+                continue
             notify(enrollment.student_id, assignment, "作业已归档" if target else "作业已恢复",
                    f"{assignment.title}：{'已归档，保留附件与成绩，停止提交和批改。' if target else '已恢复，请按截止时间完成作业。'}")
         db.session.commit()
@@ -170,12 +182,24 @@ def gradebook():
     if selected and course_id and selected.course_id != course_id:
         abort(400, description="所选教学班不属于该课程，请重新筛选。")
     assignment_id = request.args.get("assignment_id", type=int)
-    assignments, rows = class_report(selected, assignment_id) if selected else ([], [])
     all_assignments = Assignment.query.filter_by(class_id=selected.id).order_by(Assignment.id).all() if selected else []
-    statistics = [assignment_statistics(rows, assignment) for assignment in assignments]
+    if assignment_id and assignment_id not in {a.id for a in all_assignments}:
+        abort(403)
+    assignments = [a for a in all_assignments if not assignment_id or a.id == assignment_id]
+    keyword = request.args.get("student", "").strip()[:80]
+    page = None
+    rows, statistics = [], []
+    if selected:
+        roster = Enrollment.query.join(User, User.id == Enrollment.student_id).options(joinedload(Enrollment.student)).filter(
+            Enrollment.class_id == selected.id, Enrollment.active.is_(True))
+        if keyword:
+            roster = roster.filter(or_(User.username.contains(keyword), User.real_name.contains(keyword), User.student_number.contains(keyword)))
+        page = roster.order_by(Enrollment.student_id).paginate(per_page=20, error_out=False)
+        rows = grade_rows(selected, assignments, enrollments=page.items)
+        statistics = class_statistics(selected, assignments)
     return render_template("gradebook.html", courses=courses, classes=classes, selected=selected,
                            course_id=course_id, assignments=assignments, all_assignments=all_assignments,
-                           assignment_id=assignment_id, rows=rows, statistics=statistics)
+                           assignment_id=assignment_id, rows=rows, statistics=statistics, page=page, student_filter=keyword)
 
 
 def csv_cell(value):
@@ -215,24 +239,24 @@ def export_grades(class_id):
 def my_grades():
     if current_user.role != "STUDENT":
         abort(403)
-    enrollments = Enrollment.query.filter_by(student_id=current_user.id).all()
     courses = Course.query.join(TeachingClass).join(Enrollment).filter(
-        Enrollment.student_id == current_user.id).distinct().order_by(Course.id).all()
+        Enrollment.student_id == current_user.id, Enrollment.active.is_(True)).distinct().order_by(Course.id).all()
     course_id = request.args.get("course_id", type=int)
     if course_id and course_id not in {c.id for c in courses}:
         abort(403)
+    query = Assignment.query.join(Enrollment, Enrollment.class_id == Assignment.class_id).filter(
+        Enrollment.student_id == current_user.id, Enrollment.active.is_(True))
+    if course_id:
+        query = query.filter(Assignment.course_id == course_id)
+    grouped = {}
+    for card in assignment_cards(query.order_by(Assignment.id).all(), current_user.id):
+        card['score'] = card['submission'].score if card['status'] == 'GRADED' else None
+        grouped.setdefault(card['assignment'].course_id, []).append(card)
     reports = []
     for course in courses:
         if course_id and course.id != course_id:
             continue
-        cells = []
-        for enrollment in enrollments:
-            if enrollment.teaching_class.course_id != course.id:
-                continue
-            assignments = Assignment.query.filter_by(class_id=enrollment.class_id).order_by(Assignment.id).all()
-            row = next(row for row in grade_rows(enrollment.teaching_class, assignments, current_user.id)
-                       if row["student"].id == current_user.id)
-            cells.extend(row["cells"])
+        cells = grouped.get(course.id, [])
         scores = [cell["score"] for cell in cells if cell["score"] is not None]
         graded = sorted([c for c in cells if c["score"] is not None], key=lambda c: (
             c["submission"].reviewed_at or c["submission"].created_at, c["submission"].id))

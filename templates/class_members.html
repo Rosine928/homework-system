@@ -4,13 +4,20 @@
 <h1>{{ teaching_class.course.name }} · {{ teaching_class.name }}</h1>
 <p class="muted">加入码：<span class="code">{{ teaching_class.join_code }}</span>
 </p>
-<h2>班级成员（{{ teaching_class.enrollments|length }}）</h2>
-{% for enrollment in teaching_class.enrollments %}
+<h2>班级成员（{{ page.total }}，含已停用成员）</h2>
+{% for enrollment in page.items %}
 <div class="list-row">
 <span>{{ enrollment.student.display_name }} · {{ enrollment.student.username }} · 学号：{{ enrollment.student.student_number or '未填写' }}</span>
 <span class="muted">加入于 {{ enrollment.joined_at.strftime('%Y-%m-%d') }}</span>
+<details><summary>{{ '停用成员' if enrollment.active else '恢复成员（已停用）' }}</summary>
+<form method="post" action="{{ url_for('management.manage_member',id=teaching_class.id,student_id=enrollment.student_id) }}" data-confirm="确认更改成员状态？历史提交及成绩将保留。">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="{{ 'disable' if enrollment.active else 'restore' }}">
+<label for="reason-{{ enrollment.id }}">原因</label><input id="reason-{{ enrollment.id }}" name="reason" required maxlength="500">
+<p><button class="secondary">确认{{ '停用' if enrollment.active else '恢复' }}</button></p></form></details>
 </div>
 {% else %}
 <div class="empty">暂无学生加入。</div>
-{% endfor %}</section>
+{% endfor %}
+{% if page.pages > 1 %}<nav class="pagination" aria-label="成员分页">{% if page.has_prev %}<a href="{{ url_for('class_members',class_id=teaching_class.id,page=page.prev_num) }}">上一页</a>{% endif %}<span>{{ page.page }} / {{ page.pages }} 页</span>{% if page.has_next %}<a href="{{ url_for('class_members',class_id=teaching_class.id,page=page.next_num) }}">下一页</a>{% endif %}</nav>{% endif %}</section>
 {% endblock %}

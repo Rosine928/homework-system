@@ -55,6 +55,20 @@ class CSRFClient(FlaskClient):
             token = session.setdefault("csrf_token", token_urlsafe(32))
         data = dict(kwargs.pop("data", {}) or {})
         data.setdefault("csrf_token", token)
+        route = args[0] if args else ""
+        if route == "/assignment/submit":
+            data.setdefault("request_token", token_urlsafe(32))
+        record = None
+        if route == "/assignment/grade" and data.get("submission_id"):
+            record = db.session.get(Submission, int(data["submission_id"]))
+        match = re.fullmatch(r"/submission/(\d+)/(return|extend)", route)
+        if match:
+            record = db.session.get(Submission, int(match[1]))
+        match = re.fullmatch(r"/assignment/(\d+)/(edit|archive|reference)", route)
+        if match:
+            record = db.session.get(Assignment, int(match[1]))
+        if record:
+            data.setdefault("revision", record.revision)
         return super().post(*args, data=data, **kwargs)
 
 
@@ -130,6 +144,8 @@ with app.app_context():
     assert db.session.get(Submission, 1).review_state == 'GRADED'
     assert db.session.get(User, 2).real_name == ''
     assert db.session.get(User, 2).student_number is None
+    assert db.session.get(User, 2).email is None
+    assert db.session.get(User, 2).email_verified_at is None
     assert db.session.get(Assignment, 1).archived is False
     assert ReviewEvent.query.count() == 0
     assert db.session.get(Assignment, 1).class_id == 1
@@ -137,6 +153,9 @@ with app.app_context():
     assert Course.query.count() == TeachingClass.query.count() == Enrollment.query.count() == 1
     assert Path(db.engine.url.database + '.stage2.bak').is_file()
     assert Path(db.engine.url.database + '.stage3.bak').is_file()
+    assert Path(db.engine.url.database + '.stage5.bak').is_file()
+    with closing(sqlite3.connect(db.engine.url.database + '.stage5.bak')) as backup:
+        assert 'email' not in {row[1] for row in backup.execute('PRAGMA table_info(user)')}
     with closing(sqlite3.connect(db.engine.url.database + '.stage2.bak')) as backup:
         assert 'review_state' not in {row[1] for row in backup.execute('PRAGMA table_info(submission)')}
         assert backup.execute('SELECT score FROM submission').fetchone()[0] == 88
@@ -889,6 +908,496 @@ class RefinementTests(unittest.TestCase):
             event.remove(db.engine, "before_cursor_execute", capture)
         self.assertEqual(len(cards), len(assignments))
         self.assertEqual(len(statements), 1)
+
+
+class ZZImprovementTests(unittest.TestCase):
+    setUp = StageTwoTests.setUp
+    tearDown = StageTwoTests.tearDown
+    login = StageTwoTests.login
+    upload = StageTwoTests.upload
+    submitted = StageThreeTests.submitted
+    grade = StageThreeTests.grade
+    return_work = StageThreeTests.return_work
+
+    def test_stale_grade_and_duplicate_grade_do_not_overwrite_or_duplicate_audit(self):
+        submission = self.submitted()
+        revision = submission.revision
+        self.assertEqual(self.grade(submission, 95).status_code, 302)
+        self.assertEqual(self.client.post('/assignment/grade', data={'submission_id': submission.id,
+            'revision': revision, 'score': 60}).status_code, 409)
+        self.assertEqual(db.session.get(Submission, submission.id).score, 95)
+        self.assertEqual(self.grade(submission, 95).status_code, 302)
+        self.assertEqual(ReviewEvent.query.filter_by(submission_id=submission.id).count(), 1)
+
+    def test_upload_idempotency_and_token_scope(self):
+        self.login()
+        token = token_urlsafe(32)
+        for _ in range(2):
+            self.assertEqual(self.client.post('/assignment/submit', data={'assignment_id': self.assignment.id,
+                'request_token': token, 'file': (io.BytesIO(b'data'), 'a.txt')}).status_code, 302)
+        self.assertEqual(Submission.query.count(), 1)
+        self.assertEqual(self.client.post('/assignment/submit', data={'assignment_id': self.assignment.id,
+            'request_token': 'short', 'file': (io.BytesIO(b'data'), 'a.txt')}).status_code, 400)
+
+    def test_effective_deadline_notification_matches_actual_permission(self):
+        submission = self.submitted()
+        original = self.assignment.due_at
+        self.return_work(submission, redo_due_at=(beijing_now()+timedelta(hours=1)).isoformat())
+        notification = Notification.query.order_by(Notification.id.desc()).first()
+        self.assertIn(original.strftime('%Y-%m-%d %H:%M'), notification.message)
+        self.assignment.due_at = None
+        db.session.commit()
+        self.login('teacher')
+        self.client.post(f'/submission/{submission.id}/extend', data={'reason':'more time',
+            'redo_due_at': (beijing_now()+timedelta(days=3)).isoformat()})
+        self.assertIn('不限时', Notification.query.order_by(Notification.id.desc()).first().message)
+
+    def test_foreign_keys_and_legacy_trigger_reject_orphans(self):
+        from sqlalchemy.exc import IntegrityError
+        from migrations import finish_upgrade
+        self.assertEqual(db.session.execute(db.text('PRAGMA foreign_keys')).scalar(), 1)
+        with self.assertRaises(IntegrityError):
+            db.session.execute(db.text("INSERT INTO enrollment(class_id,student_id,joined_at,active) VALUES(99999,99999,CURRENT_TIMESTAMP,1)"))
+        db.session.rollback()
+        finish_upgrade()
+        self.assertTrue(db.session.execute(db.text("SELECT name FROM sqlite_master WHERE type='trigger' AND name='fk_submission_student_id_insert'")).first())
+        with self.assertRaises(IntegrityError):
+            db.session.execute(db.text("INSERT INTO submission(assignment_id,student_id,file_path,original_name) VALUES(99999,99999,'a','a')"))
+        db.session.rollback()
+
+    def test_password_change_revokes_other_sessions(self):
+        from models import AccountEvent
+        other = CSRFClient(app, response_wrapper=app.response_class)
+        other.post('/login', data={'username':'student','password':'password'})
+        self.login()
+        self.client.post('/account/password', data={'current_password':'password',
+            'new_password':'ChangedPass123','confirm_password':'ChangedPass123'})
+        self.assertEqual(other.get('/dashboard').status_code, 302)
+        self.assertEqual(AccountEvent.query.filter_by(action='PASSWORD_CHANGE').count(), 1)
+        self.assertTrue(self.client.post('/login', data={'username':'student','password':'ChangedPass123'}).location.endswith('/dashboard'))
+
+    def test_teacher_invite_login_throttle_and_disabled_user(self):
+        payload = {'username':'new-teacher','password':'GoodPass123','role':'TEACHER','real_name':'Teacher'}
+        with patch.dict(app.config, TEACHER_REGISTRATION_CODE=''):
+            self.assertEqual(self.client.post('/register', data=payload).status_code, 400)
+        with patch.dict(app.config, TEACHER_REGISTRATION_CODE='invite-secret'):
+            self.assertEqual(self.client.post('/register', data={**payload,'teacher_code':'invite-secret'}).status_code, 302)
+        for _ in range(5):
+            self.client.post('/login', data={'username':'student','password':'wrong'})
+        self.assertEqual(self.client.post('/login', data={'username':'student','password':'password'}).status_code, 429)
+        from models import LoginAttempt
+        LoginAttempt.query.delete()
+        self.student.enabled = False
+        db.session.commit()
+        self.assertTrue(self.client.post('/login', data={'username':'student','password':'password'}).location.endswith('/login'))
+
+    def test_class_controls_membership_and_archive_keep_history(self):
+        submission = self.submitted()
+        self.login('teacher')
+        class_id, student_id, submission_id = self.teaching_class.id, self.student.id, submission.id
+        old_code = self.teaching_class.join_code
+        self.client.post(f'/class/{class_id}/manage', data={'action':'rotate'})
+        self.assertNotEqual(db.session.get(TeachingClass,class_id).join_code, old_code)
+        self.client.post(f'/class/{class_id}/member/{student_id}', data={'action':'disable','reason':'wrong class'})
+        self.login()
+        self.assertEqual(self.client.get(f'/assignment/detail/{self.assignment.id}').status_code, 403)
+        self.client.post('/class/join', data={'join_code':self.teaching_class.join_code})
+        self.assertFalse(Enrollment.query.filter_by(student_id=student_id).one().active)
+        self.login('teacher')
+        self.client.post(f'/class/{class_id}/member/{student_id}', data={'action':'restore','reason':'confirmed'})
+        self.client.post(f'/class/{class_id}/manage', data={'action':'archive'})
+        self.assertEqual(self.grade(db.session.get(Submission,submission_id)).status_code, 409)
+        self.login()
+        self.upload()
+        self.assertEqual(Submission.query.count(), 1)
+        self.assertEqual(self.client.get(f'/submission/{submission_id}/download').status_code, 200)
+        self.login('other-teacher')
+        self.assertEqual(self.client.post(f'/class/{class_id}/manage', data={'action':'restore'}).status_code, 403)
+
+    def test_reference_materials_download_scope_and_stale_revision(self):
+        self.login('teacher')
+        revision = self.assignment.revision
+        route = f'/assignment/{self.assignment.id}/reference'
+        self.assertEqual(self.client.post(route, data={'rubric':'Correctness 60; analysis 40',
+            'reference':(io.BytesIO(b'reference data'),'说明.txt')}).status_code, 302)
+        self.assertEqual(self.client.post(route, data={'revision':revision,'rubric':'stale'}).status_code, 409)
+        self.login()
+        response = self.client.get(route)
+        self.assertEqual(response.data, b'reference data')
+        response.close()
+        self.login('outsider')
+        self.assertEqual(self.client.get(route).status_code, 403)
+
+    def test_bulk_zip_contains_only_current_versions_and_is_teacher_only(self):
+        from zipfile import ZipFile
+        self.submitted()
+        self.upload(filename='second.txt')
+        route = f'/assignment/{self.assignment.id}/current.zip'
+        self.assertEqual(self.client.get(route).status_code, 403)
+        self.login('teacher')
+        response = self.client.get(route)
+        self.assertEqual(response.status_code, 200)
+        with ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertEqual(len(archive.namelist()), 2)
+            self.assertTrue(any(name.endswith('second.txt') for name in archive.namelist()))
+        response.close()
+
+    def test_backup_verify_restore_and_corruption_detection(self):
+        from maintenance import verify_backup
+        from click import ClickException
+        self.submitted()
+        with tempfile.TemporaryDirectory() as directory:
+            target, restored = Path(directory)/'backup', Path(directory)/'restored'
+            result = app.test_cli_runner().invoke(args=['backup','--destination',str(target)])
+            self.assertEqual(result.exit_code, 0, result.output + str(result.exception))
+            verify_backup(target)
+            result = app.test_cli_runner().invoke(args=['restore-backup',str(target),'--destination',str(restored)])
+            self.assertEqual(result.exit_code, 0, result.output + str(result.exception))
+            self.assertEqual((target/'homework.db').read_bytes(), (restored/'homework.db').read_bytes())
+            (target/'homework.db').write_bytes(b'corrupted')
+            with self.assertRaises(ClickException):
+                verify_backup(target)
+
+    def test_operator_reset_disable_and_last_teacher_guard(self):
+        self.login()
+        runner = app.test_cli_runner()
+        result = runner.invoke(args=['reset-password','--username','student'], input='ResetPass123\nResetPass123\n')
+        self.assertEqual(result.exit_code, 0, result.output)
+        # CLI shares this fixture's outer app context; real requests get a fresh g.
+        from flask import g
+        g.pop('_login_user', None)
+        self.assertEqual(self.client.get('/dashboard').status_code, 302)
+        result = runner.invoke(args=['set-account','--username','other-teacher','--disabled'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        result = runner.invoke(args=['set-account','--username','teacher','--disabled'])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_concurrent_grade_requests_only_one_wins(self):
+        from concurrent.futures import ThreadPoolExecutor
+        submission = self.submitted()
+        submission_id, teacher_id, revision = submission.id, self.teacher.id, submission.revision
+        db.session.remove()
+        def write(score):
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session['_user_id'] = f'{teacher_id}:1'
+                session['_fresh'] = True
+                session['csrf_token'] = 'concurrent-token'
+            return client.post('/assignment/grade', data={'csrf_token':'concurrent-token','submission_id':submission_id,
+                'revision':revision,'score':score,'comment':'concurrent'}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(write, [90,60]))
+        self.assertEqual(sorted(results), [302,409])
+        self.assertEqual(ReviewEvent.query.count(), 1)
+
+    def test_report_pagination_and_sql_statistics_match_full_roster(self):
+        from workflow import class_statistics
+        for i in range(25):
+            user = User(username=f'roster-{i}', password='unused', role='STUDENT', real_name=f'Name{i}')
+            db.session.add(user)
+            db.session.flush()
+            db.session.add(Enrollment(class_id=self.teaching_class.id, student_id=user.id))
+        db.session.commit()
+        self.login('teacher')
+        page = self.client.get(f'/gradebook?class_id={self.teaching_class.id}')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'2', page.data)
+        expected = assignment_statistics(grade_rows(self.teaching_class,[self.assignment]), self.assignment)
+        self.assertEqual(class_statistics(self.teaching_class,[self.assignment])[0], expected)
+        page = self.client.get(f'/gradebook?class_id={self.teaching_class.id}&student=roster-24')
+        self.assertIn(b'roster-24', page.data)
+        self.assertNotIn(b'roster-23', page.data)
+
+    def test_concurrent_duplicate_uploads_save_one_file_and_version(self):
+        from concurrent.futures import ThreadPoolExecutor
+        assignment_id, student_id = self.assignment.id, self.student.id
+        token = token_urlsafe(32)
+        db.session.remove()
+        def upload(_):
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session['_user_id'] = f'{student_id}:1'
+                session['_fresh'] = True
+                session['csrf_token'] = 'upload-token'
+            return client.post('/assignment/submit', data={'csrf_token':'upload-token', 'assignment_id':assignment_id,
+                'request_token':token, 'file':(io.BytesIO(b'concurrent data'), 'same.txt')}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(upload, [1,2]))
+        self.assertEqual(results, [302,302])
+        self.assertEqual(Submission.query.count(), 1)
+        path = Path(app.config['UPLOAD_FOLDER'])/Submission.query.one().file_path
+        self.assertEqual(path.read_bytes(), b'concurrent data')
+
+
+class ZZZEmailRecoveryTests(unittest.TestCase):
+    login = StageTwoTests.login
+    tearDown = StageTwoTests.tearDown
+
+    def setUp(self):
+        StageTwoTests.setUp(self)
+        config = patch.dict(app.config, MAIL_SERVER='smtp.example.com', MAIL_PORT=465,
+                            MAIL_USERNAME='sender@example.com', MAIL_PASSWORD='test-authorization',
+                            MAIL_FROM='sender@example.com', MAIL_USE_SSL=True, MAIL_USE_TLS=False)
+        config.start()
+        self.addCleanup(config.stop)
+        from email_recovery import send_verification_email
+        self.real_send = send_verification_email
+        mail = patch('email_recovery.send_verification_email')
+        self.mail = mail.start()
+        self.addCleanup(mail.stop)
+
+    def bind(self):
+        self.login()
+        self.client.post('/account/email/send', data={'email':'Student@Example.com', 'current_password':'password'})
+        code = self.mail.call_args.args[1]
+        response = self.client.post('/account/email/verify', data={'email':'student@example.com', 'email_code':code})
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(self.student.email,'student@example.com')
+        self.assertIsNotNone(self.student.email_verified_at)
+        return code
+
+    def allow_resend(self):
+        from models import LoginAttempt
+        for attempt in LoginAttempt.query.all():
+            attempt.locked_until = beijing_now()-timedelta(seconds=1)
+        db.session.commit()
+
+    def send(self):
+        self.allow_resend()
+        response = self.client.post('/forgot-password/email/send',data={'email':'student@example.com'})
+        self.assertEqual(response.status_code,302)
+        return self.mail.call_args.args[1]
+
+    def reset(self, code, **overrides):
+        data = {'email':'student@example.com','email_code':code,
+                'new_password':'EmailRecovered123','confirm_password':'EmailRecovered123'}
+        data.update(overrides)
+        return self.client.post('/forgot-password/email/reset',data=data)
+
+    def test_binding_requires_password_and_email_ownership(self):
+        from models import EmailChallenge
+        self.assertEqual(self.client.post('/account/email/send',data={}).status_code,302)
+        self.mail.assert_not_called()
+        self.login()
+        self.client.post('/account/email/send',data={'email':'student@example.com','current_password':'wrong'})
+        self.mail.assert_not_called()
+        response = self.client.post('/account/email/send',data={'email':' Student@Example.com ','current_password':'password'})
+        self.assertEqual(response.status_code,302)
+        self.assertIsNone(self.student.email)
+        code = self.mail.call_args.args[1]
+        record = EmailChallenge.query.one()
+        self.assertEqual(record.email,'student@example.com')
+        self.assertNotEqual(record.token_hash,code)
+        self.assertEqual(len(record.token_hash),64)
+        self.assertIn('student@example.com'.encode(),self.client.get('/profile').data)
+        self.client.post('/account/email/verify',data={'email':'other@example.com','email_code':code})
+        self.assertIsNone(self.student.email)
+        self.client.post('/account/email/verify',data={'email':'student@example.com','email_code':code})
+        self.assertIsNotNone(self.student.email_verified_at)
+        self.assertEqual(EmailChallenge.query.count(),0)
+
+    def test_backup_recovery_removed_from_pages_routes_and_commands(self):
+        self.login()
+        for route in ('/profile', '/forgot-password'):
+            page = self.client.get(route)
+            self.assertEqual(page.status_code,200)
+            self.assertNotIn('恢复码'.encode(),page.data)
+            self.assertNotIn(b'recovery-code',page.data)
+        self.assertEqual(self.client.post('/account/recovery-code',data={'current_password':'password'}).status_code,404)
+        before = self.student.auth_version
+        response = self.client.post('/forgot-password',data={'username':'student','recovery_code':'old-code',
+            'new_password':'ChangedPass123','confirm_password':'ChangedPass123'})
+        self.assertEqual(response.status_code,405)
+        self.assertEqual(self.student.auth_version,before)
+        result = app.test_cli_runner().invoke(args=['issue-password-reset','--username','student'])
+        self.assertEqual(result.exit_code,2)
+        self.assertNotIn('password_recovery',db.metadata.tables)
+
+    def test_end_to_end_reset_revokes_sessions_and_all_codes(self):
+        from models import AccountEvent, EmailChallenge
+        self.bind()
+        other = CSRFClient(app,response_wrapper=app.response_class)
+        other.post('/login',data={'username':'student','password':'password'})
+        self.client.post('/logout')
+        code = self.send()
+        page = self.client.get('/forgot-password')
+        self.assertNotIn(code.encode(),page.data)
+        self.assertIn(b'student@example.com',page.data)
+        self.assertEqual(self.reset(code).status_code,302)
+        self.assertEqual(other.get('/dashboard').status_code,302)
+        self.assertEqual(EmailChallenge.query.count(),0)
+        self.assertEqual(AccountEvent.query.filter_by(action='PASSWORD_RECOVERED').count(),1)
+        self.assertEqual(self.reset(code).status_code,400)
+        response = self.client.post('/login',data={'username':'student','password':'EmailRecovered123'})
+        self.assertTrue(response.location.endswith('/dashboard'))
+
+    def test_expired_wrong_codes_and_attempt_limit(self):
+        from models import EmailChallenge
+        self.bind()
+        code = self.send()
+        wrong = '000000' if code != '000000' else '111111'
+        for _ in range(5):
+            self.assertEqual(self.reset(wrong).status_code,400)
+        self.assertEqual(self.reset(code).status_code,400)
+        code = self.send()
+        EmailChallenge.query.one().expires_at = beijing_now()-timedelta(seconds=1)
+        db.session.commit()
+        self.assertEqual(self.reset(code).status_code,400)
+
+    def test_resend_rotates_code_and_limits_frequency(self):
+        self.bind()
+        with patch('email_recovery.randbelow',side_effect=[123456,654321]):
+            first = self.send()
+            before = self.mail.call_count
+            self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':'student@example.com'}).status_code,429)
+            self.assertEqual(self.mail.call_count,before)
+            second = self.send()
+        self.assertEqual(self.reset(first).status_code,400)
+        self.assertEqual(self.reset(second).status_code,302)
+
+    def test_newly_bound_email_can_request_reset_immediately(self):
+        self.bind()
+        response = self.client.post('/forgot-password/email/send',data={'email':'student@example.com'})
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(self.mail.call_args.args[2],'reset')
+        self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':'student@example.com'}).status_code,429)
+
+    def test_password_validation_keeps_challenge_usable(self):
+        self.bind()
+        code = self.send()
+        self.assertEqual(self.reset(code,new_password='short',confirm_password='short').status_code,400)
+        self.assertEqual(self.reset(code,confirm_password='different').status_code,400)
+        self.assertEqual(self.reset(code,new_password='password',confirm_password='password').status_code,400)
+        self.assertEqual(self.reset(code).status_code,302)
+
+    def test_unknown_unverified_disabled_and_send_failure_share_message(self):
+        import smtplib
+        from models import EmailChallenge
+        self.bind()
+        self.allow_resend()
+        self.mail.side_effect = smtplib.SMTPException('must never be logged')
+        known = self.client.post('/forgot-password/email/send',data={'email':'student@example.com'},follow_redirects=True)
+        self.assertEqual(EmailChallenge.query.count(),0)
+        before = self.mail.call_count
+        unknown = self.client.post('/forgot-password/email/send',data={'email':'unknown@example.com'},follow_redirects=True)
+        self.assertEqual(known.status_code,unknown.status_code)
+        message = '如果该邮箱已绑定可用账号'.encode()
+        self.assertIn(message,known.data)
+        self.assertIn(message,unknown.data)
+        self.assertEqual(before,self.mail.call_count)
+        self.student.email_verified_at = None
+        db.session.commit()
+        self.send()
+        self.assertEqual(before,self.mail.call_count)
+        self.student.email_verified_at = beijing_now()
+        self.student.enabled = False
+        db.session.commit()
+        self.send()
+        self.assertEqual(before,self.mail.call_count)
+
+    def test_binding_is_unique_and_account_scoped(self):
+        self.bind()
+        self.login('outsider')
+        self.allow_resend()
+        before = self.mail.call_count
+        self.client.post('/account/email/send',data={'email':'STUDENT@example.com','current_password':'password'})
+        self.assertEqual(before,self.mail.call_count)
+        self.client.post('/account/email/send',data={'email':'other@example.com','current_password':'password'})
+        self.allow_resend()
+        self.client.post('/account/email/send',data={'email':'other@example.com','current_password':'password'})
+        code = self.mail.call_args.args[1]
+        self.login()
+        self.client.post('/account/email/verify',data={'email':'other@example.com','email_code':code})
+        self.assertEqual(self.student.email,'student@example.com')
+        self.assertIsNone(self.outsider.email)
+
+    def test_binding_code_cannot_reset_and_password_change_revokes_code(self):
+        self.login()
+        self.client.post('/account/email/send',data={'email':'student@example.com','current_password':'password'})
+        binding_code = self.mail.call_args.args[1]
+        self.assertEqual(self.reset(binding_code).status_code,400)
+        self.client.post('/account/email/verify',data={'email':'student@example.com','email_code':binding_code})
+        code = self.send()
+        self.client.post('/account/password',data={'current_password':'password',
+                         'new_password':'ChangedPass123','confirm_password':'ChangedPass123'})
+        self.assertEqual(self.reset(code).status_code,400)
+
+    def test_email_change_revokes_old_reset_challenges(self):
+        from models import EmailChallenge
+        self.bind()
+        old_code = self.send()
+        self.allow_resend()
+        self.client.post('/account/email/send',data={'email':'new@example.com','current_password':'password'})
+        code = self.mail.call_args.args[1]
+        self.assertEqual(self.student.email,'student@example.com')
+        self.client.post('/account/email/verify',data={'email':'new@example.com','email_code':code})
+        self.assertEqual(self.student.email,'new@example.com')
+        self.assertEqual(EmailChallenge.query.count(),0)
+        self.assertEqual(self.reset(old_code).status_code,400)
+
+    def test_csrf_invalid_email_and_unconfigured_smtp(self):
+        bare = app.test_client()
+        for route in ('/forgot-password/email/send','/forgot-password/email/reset',
+                      '/account/email/send','/account/email/verify'):
+            self.assertEqual(bare.post(route,data={}).status_code,400)
+        for address in ('bad','a@b.com\r\nBcc: other@example.com','a..b@example.com'):
+            self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':address}).status_code,400)
+        with patch.dict(app.config,MAIL_SERVER=''):
+            self.assertNotIn('邮箱服务尚未配置'.encode(),self.client.get('/forgot-password').data)
+            response = self.client.post('/forgot-password/email/send',data={'email':'student@example.com'})
+            self.assertEqual(response.status_code,503)
+        self.mail.assert_not_called()
+
+    def test_ip_send_limit_and_per_address_send_window(self):
+        for index in range(20):
+            response = self.client.post('/forgot-password/email/send',data={'email':f'unknown{index}@example.com'})
+            self.assertEqual(response.status_code,302)
+        self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':'another@example.com'}).status_code,429)
+        self.mail.assert_not_called()
+        from models import LoginAttempt
+        LoginAttempt.query.delete()
+        db.session.commit()
+        for _ in range(5):
+            self.allow_resend()
+            self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':'unknown@example.com'}).status_code,302)
+        self.allow_resend()
+        self.assertEqual(self.client.post('/forgot-password/email/send',data={'email':'unknown@example.com'}).status_code,429)
+
+    def test_concurrent_reset_consumes_code_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.bind()
+        code = self.send()
+        db.session.remove()
+        def reset(_):
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session['csrf_token']='email-concurrent'
+            return client.post('/forgot-password/email/reset',data={'csrf_token':'email-concurrent',
+                'email':'student@example.com','email_code':code,
+                'new_password':'EmailRecovered123','confirm_password':'EmailRecovered123'}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(reset,[1,2]))
+        self.assertEqual(sorted(results),[302,400])
+
+    def test_smtp_ssl_and_starttls_transport(self):
+        # Exercise the real message builder without connecting to a mail server.
+        with patch('email_recovery.smtplib.SMTP_SSL') as smtp:
+            connection = smtp.return_value.__enter__.return_value
+            connection.send_message.return_value = {}
+            self.real_send('student@example.com','012345','reset')
+            connection.login.assert_called_once_with('sender@example.com','test-authorization')
+            message = connection.send_message.call_args.args[0]
+            self.assertEqual(message['To'],'student@example.com')
+            self.assertIn('012345',message.get_content())
+            self.assertIn('10 分钟',message.get_content())
+            connection.starttls.assert_not_called()
+        with patch.dict(app.config,MAIL_USE_SSL=False,MAIL_USE_TLS=True,MAIL_PORT=587):
+            with patch('email_recovery.smtplib.SMTP') as smtp:
+                connection = smtp.return_value.__enter__.return_value
+                connection.send_message.return_value = {}
+                self.real_send('student@example.com','123456','bind')
+                connection.starttls.assert_called_once()
+                self.assertIn('绑定邮箱',connection.send_message.call_args.args[0]['Subject'])
 
 
 if __name__ == "__main__":

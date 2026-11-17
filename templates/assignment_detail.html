@@ -12,6 +12,9 @@
 <span>截止：{{ assignment.due_at.strftime('%Y-%m-%d %H:%M') if assignment.due_at else '历史作业未设置' }}</span>
 </div>
 <p class="details">{{ assignment.description }}</p>
+{% if assignment.rubric %}<h2>评分标准</h2><p class="details">{{ assignment.rubric }}</p>{% endif %}
+{% if assignment.reference_path %}<p><a href="{{ url_for('teaching_tools.download_reference',id=assignment.id) }}">参考附件：{{ assignment.reference_name }} ↓ 下载</a></p>{% endif %}
+{% if not teaching_open %}<p class="notice info">作业、课程或班级已归档，历史资料与成绩仍可查阅。</p>{% endif %}
 {% if student_status %}<span class="status {{ student_status|lower }}">{{ '已提交 · ' if submissions else '' }}{{ status_labels[student_status] }}</span>
 {% endif %}</section>
 {% include '_assignment_manage.html' %}
@@ -29,6 +32,7 @@
 <form action="{{ url_for('submit_homework') }}" method="post" enctype="multipart/form-data">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="assignment_id" value="{{ assignment.id }}">
+<input type="hidden" name="request_token" value="{{ upload_token }}">
 <label for="submission-file">作业附件</label>
 <input id="submission-file" type="file" name="file" required accept=".pdf,.doc,.docx,.txt,.zip,.rar,.py,.java,.c,.cpp,.ppt,.pptx,.xls,.xlsx,.jpg,.jpeg,.png">
 <small>最大 20 MB，支持文档、图片、代码与压缩包。重新提交会成为当前有效版本，原文件及批改记录保留，等待教师重新评分。</small>
@@ -37,7 +41,7 @@
 </p>
 </form>
 {% else %}
-<p class="notice error">{{ '该作业已归档，不能继续提交。' if assignment.archived else '该作业已截止，不能继续提交。' }}需要重做时请联系教师退回并设置重交期限。</p>
+<p class="notice error">{{ '作业、课程或班级已归档，不能继续提交。' if not teaching_open else '该作业已截止，不能继续提交。' }}需要重做时请联系教师。</p>
 {% endif %}</section>
 {% elif assignment.teaching_class %}
 <section class="panel">
@@ -49,7 +53,8 @@
 </div>
 {% else %}
 <div class="empty">暂无班级成员。</div>
-{% endfor %}</section>
+{% endfor %}
+{% if progress_page and progress_page.pages > 1 %}<nav class="pagination" aria-label="名单分页">{% if progress_page.has_prev %}<a href="{{ url_for('assignment_detail',id=assignment.id,roster_page=progress_page.prev_num) }}">上一页名单</a>{% endif %}<span>{{ progress_page.page }} / {{ progress_page.pages }} 页 · {{ progress_page.total }} 人</span>{% if progress_page.has_next %}<a href="{{ url_for('assignment_detail',id=assignment.id,roster_page=progress_page.next_num) }}">下一页名单</a>{% endif %}</nav>{% endif %}</section>
 {% endif %}
 {% macro submission_record(sub, active) %}
 <article class="record">
@@ -71,10 +76,11 @@
 </p>
 {% endif %}
 <p class="details muted">{{ sub.comment or '暂无评语' }}</p>
-{% if current_user.role == 'TEACHER' and active and sub.review_state != 'RETURNED' and not assignment.archived %}
+{% if current_user.role == 'TEACHER' and active and sub.review_state != 'RETURNED' and teaching_open %}
 <form class="grade" action="{{ url_for('grade_homework') }}" method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="submission_id" value="{{ sub.id }}">
+<input type="hidden" name="revision" value="{{ sub.revision }}">
 <div>
 <label for="score-{{ sub.id }}">分数 / 100</label>
 <input id="score-{{ sub.id }}" type="number" name="score" min="0" max="100" required value="{{ sub.score if sub.score is not none else '' }}">
@@ -84,10 +90,12 @@
 <input id="comment-{{ sub.id }}" name="comment" maxlength="2000" value="{{ sub.comment or '' }}">
 </div>
 <button>保存评分</button>
+<div class="quick-comments"><button type="button" class="text-button" data-comment="完成情况良好，继续保持。" data-target="comment-{{ sub.id }}">完成良好</button> · <button type="button" class="text-button" data-comment="请补充实现过程和结果分析。" data-target="comment-{{ sub.id }}">补充分析</button></div>
 </form>
 <details class="redo">
 <summary>退回重做</summary>
 <form action="{{ url_for('final_stage.return_submission',id=sub.id) }}" method="post">
+<input type="hidden" name="revision" value="{{ sub.revision }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <label for="reason-{{ sub.id }}">退回原因</label>
 <textarea id="reason-{{ sub.id }}" name="reason" required maxlength="2000">
@@ -109,13 +117,23 @@
 {% endmacro %}
 <section class="panel">
 <h2>{{ '我的当前提交' if current_user.role == 'STUDENT' else '当前有效提交与评分' }}</h2>
+{% if current_user.role == 'TEACHER' %}
+<form class="form-grid" method="get"><div><label for="student-search">姓名、学号或账号</label><input id="student-search" name="student" value="{{ student_filter }}" maxlength="80"></div>
+<div><label for="review-filter">批改状态</label><select id="review-filter" name="review"><option value="">全部当前提交</option>{% for value,label in [('PENDING','待批改'),('GRADED','已评分'),('RETURNED','退回重做')] %}<option value="{{ value }}" {% if review_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><p><button>筛选提交</button></p></form>
+<p><a href="{{ url_for('teaching_tools.download_current',id=assignment.id) }}">批量下载当前有效附件（全班）</a></p>
+{% endif %}
 {% for sub in submissions if sub.id in active_ids %}{{ submission_record(sub,true) }}{% else %}
 <div class="empty">暂无提交记录。</div>
-{% endfor %}</section>
-<details class="panel">
-<summary>历史版本（{{ submissions|length - active_ids|length if current_user.role == 'TEACHER' else submissions|length - (1 if submissions else 0) }}）</summary>
+{% endfor %}
+{% if current_page.pages > 1 %}<nav class="pagination" aria-label="提交分页">{% if current_page.has_prev %}<a href="{{ url_for('assignment_detail',id=assignment.id,page=current_page.prev_num,student=student_filter,review=review_filter) }}">上一页</a>{% endif %}<span>{{ current_page.page }} / {{ current_page.pages }} 页 · {{ current_page.total }} 份</span>{% if current_page.has_next %}<a href="{{ url_for('assignment_detail',id=assignment.id,page=current_page.next_num,student=student_filter,review=review_filter) }}">下一页</a>{% endif %}</nav>{% endif %}
+</section>
+<details class="panel" {% if history_page %}open{% endif %}>
+<summary>历史版本（{{ history_count }}）</summary>
 <p class="muted">历史文件、成绩和退回原因保留供查阅；当前成绩以最新版本为准。</p>
+{% if history_count and not history_page %}<a href="{{ url_for('assignment_detail',id=assignment.id,history=1,student=student_filter,review=review_filter) }}">加载历史版本</a>{% else %}
 {% for sub in submissions if sub.id not in active_ids %}{{ submission_record(sub,false) }}{% else %}
 <div class="empty">暂无历史版本。</div>
-{% endfor %}</details>
+{% endfor %}{% endif %}
+{% if history_page and history_page.pages > 1 %}<nav class="pagination" aria-label="历史版本分页">{% if history_page.has_prev %}<a href="{{ url_for('assignment_detail',id=assignment.id,history=1,history_page=history_page.prev_num) }}">上一页历史</a>{% endif %}<span>{{ history_page.page }} / {{ history_page.pages }} 页</span>{% if history_page.has_next %}<a href="{{ url_for('assignment_detail',id=assignment.id,history=1,history_page=history_page.next_num) }}">下一页历史</a>{% endif %}</nav>{% endif %}
+</details>
 {% endblock %}

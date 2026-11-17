@@ -1,7 +1,7 @@
 // Run against an isolated database; use installed Microsoft Edge, no browser download.
 const { chromium } = require('../artifacts/browser-tools/node_modules/playwright');
 const { spawn, spawnSync } = require('node:child_process');
-const { mkdirSync, writeFileSync } = require('node:fs');
+const { mkdirSync, writeFileSync, readFileSync } = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
@@ -13,9 +13,22 @@ if (fixture.status !== 0) throw new Error(fixture.stderr || fixture.stdout);
 const ids = JSON.parse(fixture.stdout.trim());
 const port = 15053;
 const base = `http://127.0.0.1:${port}`;
-const server = spawn(python, ['app.py'], {
+// Capture mail only in this isolated acceptance server; never send real messages.
+const mailServer = `
+import json, os
+from pathlib import Path
+from app import app
+import email_recovery
+def capture(email, code, purpose):
+    Path(os.environ['HOMEWORK_TEST_MAILBOX']).write_text(json.dumps(dict(email=email, code=code, purpose=purpose)), encoding='utf-8')
+email_recovery.send_verification_email = capture
+app.run(debug=False, port=int(os.environ['PORT']))
+`;
+const server = spawn(python, ['-c', mailServer], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: String(port), HOMEWORK_DATABASE_URI: `sqlite:///${path.join(target, 'demo.db').replace(/\\/g, '/')}`, HOMEWORK_UPLOAD_FOLDER: path.join(target, 'uploads') },
+    env: { ...process.env, PORT: String(port), HOMEWORK_DATABASE_URI: `sqlite:///${path.join(target, 'demo.db').replace(/\\/g, '/')}`, HOMEWORK_UPLOAD_FOLDER: path.join(target, 'uploads'),
+        MAIL_SERVER: 'smtp.example.test', MAIL_FROM: 'sender@example.test', MAIL_USE_SSL: '1', MAIL_USE_TLS: '0',
+        HOMEWORK_TEST_MAILBOX: path.join(target, 'test-mailbox.json') },
 });
 let serverLog = '';
 server.stdout.on('data', data => { serverLog += data; });
@@ -28,10 +41,10 @@ let browser;
 async function submit(form, name) {
     await Promise.all([form.page().waitForNavigation(), form.getByRole('button', { name, exact: true }).click()]);
 }
-async function login(page, username) {
+async function login(page, username, password = 'DemoPass123') {
     await page.goto(`${base}/login`);
     await page.getByLabel('用户名', { exact: true }).fill(username);
-    await page.getByLabel('密码', { exact: true }).fill('DemoPass123');
+    await page.getByLabel('密码', { exact: true }).fill(password);
     await submit(page.locator('form[action="/login"]'), '登录');
     assert(page.url().endsWith('/dashboard'));
 }
@@ -88,13 +101,17 @@ async function main() {
     const edit = (await openSummary(teacher, '作业管理')).locator('form').first();
     await edit.locator('[name="description"]').fill('实现作业提交、批改反馈和统计导出，并提交完整实验报告及截图。');
     await submit(edit, '保存作业信息');
+    const reference = (await openSummary(teacher, '评分标准与参考附件')).locator('form');
+    await reference.locator('[name="rubric"]').fill('功能实现 60 分；测试与分析 40 分。');
+    await reference.locator('[name="reference"]').setInputFiles({ name: '参考说明.txt', mimeType: 'text/plain', buffer: Buffer.from('Reference instructions') });
+    await submit(reference, '保存教学资料');
     await login(student, 'demo-student');
     await student.goto(`${base}/notifications`);
     assert(await student.getByText('新作业发布', { exact: true }).count());
     await shot(student, '01-notifications.png');
     await student.goto(`${base}/profile`);
     await student.locator('#real-name').fill('林同学');
-    await submit(student.locator('main form'), '保存资料');
+    await submit(student.locator('main form').first(), '保存资料');
     await student.goto(assignmentURL);
     const longName = '实验报告_'.repeat(12) + '.txt';
     await student.locator('input[type="file"]').setInputFiles({ name: longName, mimeType: 'text/plain', buffer: Buffer.from('First revision') });
@@ -102,9 +119,13 @@ async function main() {
     await student.locator('input[type="file"]').setInputFiles({ name: '实验报告_第二版.txt', mimeType: 'text/plain', buffer: Buffer.from('Second revision') });
     await submit(student.locator('form[enctype]'), '上传新版本');
     await openSummary(student, '历史版本');
+    await student.getByRole('link', { name: '加载历史版本', exact: true }).click();
     await assertLayout(student, 'student-long-filename-desktop');
     await shot(student, '02-submission-versions.png');
     await teacher.goto(assignmentURL);
+    const bulkPromise = teacher.waitForEvent('download');
+    await teacher.getByRole('link', { name: '批量下载当前有效附件（全班）', exact: true }).click();
+    await (await bulkPromise).saveAs(path.join(target, 'current-submissions.zip'));
     const grade = teacher.locator('form.grade');
     assert.equal(await grade.count(), 1);
     await grade.locator('[name="score"]').fill('80');
@@ -166,7 +187,10 @@ async function main() {
     await student.setViewportSize({ width: 390, height: 844 });
     for (const route of ['/dashboard', '/assignment/list', '/notifications', '/my-grades', '/profile', `/assignment/detail/${assignmentId}`]) {
         await student.goto(base + route);
-        if (route.includes('/assignment/detail/')) await openSummary(student, '历史版本');
+        if (route.includes('/assignment/detail/')) {
+            await openSummary(student, '历史版本');
+            await student.getByRole('link', { name: '加载历史版本', exact: true }).click();
+        }
         await assertLayout(student, `student-mobile:${route}`);
     }
     await shot(student, '07-mobile-submission.png');
@@ -175,14 +199,49 @@ async function main() {
     await assertLayout(teacher, 'teacher-gradebook-mobile');
     await shot(teacher, '08-mobile-gradebook.png');
     const anonymous = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    for (const route of ['/login', '/register']) {
+    for (const route of ['/login', '/register', '/forgot-password']) {
         await anonymous.goto(base + route);
         await assertLayout(anonymous, `anonymous-mobile:${route}`);
     }
-    await shot(anonymous, '09-mobile-register.png');
+    await shot(anonymous, '09-mobile-password-recovery.png');
+    await login(anonymous, 'demo-student');
+    await anonymous.goto(`${base}/profile`);
+    assert(!(await anonymous.locator('body').innerText()).includes('恢复码'));
+    const bindingForm = anonymous.locator('form[action="/account/email/send"]');
+    await bindingForm.getByLabel('邮箱地址', { exact: true }).fill('student@example.com');
+    await bindingForm.getByLabel('验证当前密码', { exact: true }).fill('DemoPass123');
+    await submit(bindingForm, '发送绑定验证码');
+    const bindingMail = JSON.parse(readFileSync(path.join(target, 'test-mailbox.json'), 'utf8'));
+    assert.equal(bindingMail.purpose, 'bind');
+    const bindingConfirm = anonymous.locator('form[action="/account/email/verify"]');
+    await bindingConfirm.locator('[name="email_code"]').fill(bindingMail.code);
+    await submit(bindingConfirm, '验证并绑定邮箱');
+    assert((await anonymous.locator('body').innerText()).includes('邮箱绑定成功'));
+    await assertLayout(anonymous, 'mobile-email-binding');
+    await shot(anonymous, '10-mobile-email-binding.png');
+    const emailOldSession = await browser.newContext({ storageState: await anonymous.context().storageState() });
+    await anonymous.goto(`${base}/forgot-password`);
+    const emailForm = anonymous.locator('form[action="/forgot-password/email/reset"]');
+    await emailForm.getByLabel('已绑定邮箱', { exact: true }).fill('student@example.com');
+    // Sending must work before the required code/password fields have been filled.
+    await submit(emailForm, '发送验证码');
+    const resetMail = JSON.parse(readFileSync(path.join(target, 'test-mailbox.json'), 'utf8'));
+    assert.equal(resetMail.purpose, 'reset');
+    await emailForm.getByLabel('邮箱验证码', { exact: true }).fill(resetMail.code);
+    await emailForm.getByLabel('新密码', { exact: true }).fill('EmailRecovered123');
+    await emailForm.getByLabel('确认新密码', { exact: true }).fill('EmailRecovered123');
+    await assertLayout(anonymous, 'mobile-email-recovery');
+    await shot(anonymous, '11-mobile-email-recovery.png');
+    await submit(emailForm, '重置密码');
+    assert(anonymous.url().endsWith('/login'));
+    const emailRevoked = await emailOldSession.newPage();
+    await emailRevoked.goto(`${base}/dashboard`);
+    assert(emailRevoked.url().includes('/login'));
+    await emailOldSession.close();
+    await login(anonymous, 'demo-student', 'EmailRecovered123');
     assert.equal(issues.length, 0, JSON.stringify(issues));
     return { status: 'passed', checkedPages, screenshots, issues, assignmentId,
-        flows: ['publish', 'edit', 'notifications', 'profile', 'versions', 'grade-history', 'return', 'extend', 'resubmit', 'gradebook', 'csv', 'archive-restore', 'expired-redo-reopen', 'pagination', 'mobile-layout'] };
+        flows: ['publish', 'edit', 'reference-rubric', 'bulk-zip', 'notifications', 'profile', 'versions', 'grade-history', 'return', 'extend', 'resubmit', 'gradebook', 'csv', 'archive-restore', 'expired-redo-reopen', 'pagination', 'mobile-layout', 'email-binding', 'email-password-recovery', 'email-reset-revokes-sessions'] };
 }
 
 (async () => {

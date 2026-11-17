@@ -29,9 +29,12 @@
 {% for a in all_assignments %}<option value="{{ a.id }}" {% if assignment_id == a.id %}selected{% endif %}>{{ a.title }}</option>
 {% endfor %}</select>
 </div>
-<div class="actions">
+<div>
+<label for="grade-student">姓名、学号或账号</label><input id="grade-student" name="student" value="{{ student_filter }}" maxlength="80">
+<p class="actions">
 <button>查看成绩</button>
 <a href="{{ url_for('final_stage.gradebook') }}">重置</a>
+</p>
 </div>
 </form>
 {% if selected %}
@@ -68,6 +71,8 @@
 {% endfor %}</tbody>
 </table>
 </div>
+{% if page.pages > 1 %}<nav class="pagination" aria-label="成绩分页">{% if page.has_prev %}<a href="{{ url_for('final_stage.gradebook',class_id=selected.id,course_id=course_id,assignment_id=assignment_id,student=student_filter,page=page.prev_num) }}">上一页</a>{% endif %}<span>{{ page.page }} / {{ page.pages }} 页 · {{ page.total }} 人</span>{% if page.has_next %}<a href="{{ url_for('final_stage.gradebook',class_id=selected.id,course_id=course_id,assignment_id=assignment_id,student=student_filter,page=page.next_num) }}">下一页</a>{% endif %}</nav>{% endif %}
+<p class="muted">统计与 CSV 导出覆盖全班，不受名单搜索及分页影响。</p>
 {% if not assignments %}
 <p class="muted">该班尚未发布作业。</p>
 {% endif %}</section>

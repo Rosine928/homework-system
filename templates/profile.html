@@ -20,4 +20,53 @@
 </p>
     </form>
 </section>
+<section class="panel auth">
+    <h2>修改密码</h2>
+    <form action="{{ url_for('change_password') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="current-password">当前密码</label>
+        <input id="current-password" type="password" name="current_password" required maxlength="128" autocomplete="current-password">
+        <label for="new-password">新密码</label>
+        <input id="new-password" type="password" name="new_password" required minlength="8" maxlength="128" autocomplete="new-password">
+        <label for="confirm-password">确认新密码</label>
+        <input id="confirm-password" type="password" name="confirm_password" required minlength="8" maxlength="128" autocomplete="new-password">
+        <small>修改后需重新登录，其他设备上的旧会话及已有邮箱验证码同时失效。</small>
+        <p><button>修改密码并重新登录</button></p>
+    </form>
+</section>
+<section class="panel auth">
+    <h2>找回密码邮箱</h2>
+    {% if current_user.email and current_user.email_verified_at %}
+    <p>已绑定：<strong>{{ current_user.email }}</strong>（已验证）</p>
+    {% else %}
+    <p class="muted">绑定并验证邮箱后，忘记密码时可直接接收验证码找回。</p>
+    {% endif %}
+    <form method="post" action="{{ url_for('send_binding_email') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="binding-email">{{ '新邮箱' if current_user.email else '邮箱地址' }}</label>
+        <input id="binding-email" type="email" name="email" required maxlength="254" autocomplete="email" value="{{ session.get('binding_email', current_user.email or '') }}">
+        <label for="binding-password">验证当前密码</label>
+        <input id="binding-password" type="password" name="current_password" required maxlength="128" autocomplete="current-password">
+        <p><button {% if not email_service_ready() %}disabled{% endif %}>发送绑定验证码</button></p>
+    </form>
+    {% if session.get('binding_email') %}
+    <form method="post" action="{{ url_for('confirm_binding_email') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="email" value="{{ session['binding_email'] }}">
+        <label for="binding-code">发送至 {{ session['binding_email'] }} 的验证码</label>
+        <input id="binding-code" name="email_code" required minlength="6" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code">
+        <small>10 分钟内有效。完成验证后才会替换原有邮箱。</small>
+        <p><button>验证并绑定邮箱</button></p>
+    </form>
+    {% endif %}
+</section>
+{% if identity_events %}
+<section class="panel auth">
+    <h2>最近身份修改记录</h2>
+    {% for event in identity_events %}
+    <p>{{ event.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+    <p class="details muted">姓名：{{ event.change.before.name or '未填写' }} → {{ event.change.after.name or '未填写' }}；学号：{{ event.change.before.student_number or '未填写' }} → {{ event.change.after.student_number or '未填写' }}</p>
+    {% endfor %}
+</section>
+{% endif %}
 {% endblock %}

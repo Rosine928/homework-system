@@ -1,6 +1,6 @@
 """Shared rules: one effective submission per student and assignment."""
-from sqlalchemy import exists, or_
-from sqlalchemy.orm import aliased
+from sqlalchemy import exists, or_, case, func
+from sqlalchemy.orm import aliased, joinedload
 
 from models import Assignment, Enrollment, Notification, ReviewEvent, Submission, beijing_now, db
 
@@ -42,7 +42,17 @@ def submission_deadline(assignment, submission):
 
 def can_submit(assignment, submission):
     deadline = submission_deadline(assignment, submission)
-    return not assignment.archived and (deadline is None or deadline > beijing_now())
+    return teaching_open(assignment) and (deadline is None or deadline > beijing_now())
+
+
+def teaching_open(assignment):
+    return not assignment.archived and (not assignment.course or not assignment.course.archived) and (
+        not assignment.teaching_class or not assignment.teaching_class.archived)
+
+
+def deadline_label(assignment, submission):
+    deadline = submission_deadline(assignment, submission)
+    return deadline.strftime("%Y-%m-%d %H:%M（北京时间）") if deadline else "不限时"
 
 
 def assignment_cards(assignments, student_id=None):
@@ -50,6 +60,12 @@ def assignment_cards(assignments, student_id=None):
     if not assignments:
         return []
     query = effective_submissions().filter(Submission.assignment_id.in_([a.id for a in assignments]))
+    if student_id is None:
+        totals = {row[0]: row for row in query.with_entities(Submission.assignment_id, func.count(Submission.id),
+            func.sum(case(((Submission.score.is_(None)) & (Submission.review_state != "RETURNED"), 1), else_=0))
+            ).group_by(Submission.assignment_id).all()}
+        return [{"assignment": assignment, "submission_count": totals.get(assignment.id, (None, 0, 0))[1],
+                 "pending_count": totals.get(assignment.id, (None, 0, 0))[2]} for assignment in assignments]
     if student_id is not None:
         query = query.filter(Submission.student_id == student_id)
     grouped = {}
@@ -104,20 +120,28 @@ def notify(user_id, assignment, title, message):
 
 def notify_assignment(assignment, student_id=None):
     recipients = [student_id] if student_id else [e.student_id for e in
-        Enrollment.query.filter_by(class_id=assignment.class_id).all()]
+        Enrollment.query.filter_by(class_id=assignment.class_id, active=True).all()]
     for recipient in recipients:
         notify(recipient, assignment, "新作业发布", f"{assignment.title}：请查看作业要求与截止时间。")
 
 
-def grade_rows(teaching_class, assignments, student_id=None):
+def grade_rows(teaching_class, assignments, student_id=None, *, enrollments=None):
     assignment_ids = [a.id for a in assignments]
     query = effective_submissions().filter(Submission.assignment_id.in_(assignment_ids))
     if student_id is not None:
         query = query.filter(Submission.student_id == student_id)
+    if enrollments is not None:
+        enrollments = list(enrollments)
+        query = query.filter(Submission.student_id.in_([e.student_id for e in enrollments]))
     submissions = query.all()
     lookup = {(s.student_id, s.assignment_id): s for s in submissions}
     rows = []
-    for enrollment in sorted(teaching_class.enrollments, key=lambda e: (e.student.username, e.student_id)):
+    if enrollments is None:
+        query = Enrollment.query.options(joinedload(Enrollment.student)).filter_by(class_id=teaching_class.id, active=True)
+        if student_id is not None:
+            query = query.filter_by(student_id=student_id)
+        enrollments = query.order_by(Enrollment.student_id).all()
+    for enrollment in enrollments:
         if student_id is not None and enrollment.student_id != student_id:
             continue
         cells = []
@@ -149,3 +173,28 @@ def assignment_statistics(rows, assignment):
             "average": round(sum(scores) / len(scores), 2) if scores else None,
             "highest": max(scores) if scores else None, "lowest": min(scores) if scores else None,
             "distribution": distribution}
+
+
+def class_statistics(teaching_class, assignments):
+    """Aggregate whole-class statistics without constructing a student/assignment matrix."""
+    members = Enrollment.query.filter_by(class_id=teaching_class.id, active=True).count()
+    graded = (Submission.score.is_not(None)) & (Submission.review_state != "RETURNED")
+    score = case((graded, Submission.score), else_=None)
+    buckets = [("0–59", 0, 59), ("60–69", 60, 69), ("70–79", 70, 79), ("80–89", 80, 89), ("90–100", 90, 100)]
+    query = effective_submissions().join(Enrollment, (Enrollment.student_id == Submission.student_id) &
+        (Enrollment.class_id == teaching_class.id) & Enrollment.active.is_(True)).filter(
+        Submission.assignment_id.in_([a.id for a in assignments]))
+    aggregates = query.with_entities(Submission.assignment_id, func.count(Submission.id), func.count(score),
+        func.avg(score), func.max(score), func.min(score),
+        func.sum(case((Submission.review_state == "RETURNED", 1), else_=0)),
+        *[func.sum(case((graded & Submission.score.between(low, high), 1), else_=0)) for _, low, high in buckets]
+        ).group_by(Submission.assignment_id).all()
+    lookup = {row[0]: row for row in aggregates}
+    result = []
+    for assignment in assignments:
+        row = lookup.get(assignment.id, (assignment.id, 0, 0, None, None, None, 0, 0, 0, 0, 0, 0))
+        result.append({"assignment": assignment, "members": members, "submitted": row[1],
+            "missing": members-row[1], "graded": row[2], "average": round(row[3], 2) if row[3] is not None else None,
+            "highest": row[4], "lowest": row[5], "returned": row[6], "rate": round(row[1]/members*100, 1) if members else 0,
+            "distribution": [{"label": label, "count": row[7+i]} for i, (label, _, _) in enumerate(buckets)]})
+    return result

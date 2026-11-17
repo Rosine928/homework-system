@@ -1,12 +1,23 @@
 {% if assignment.archived %}
     <div class="notice info">该作业已归档，保留附件、成绩及批改记录，停止提交与批改。</div>
 {% endif %}
+{% if current_user.role == 'TEACHER' and teaching_open %}
+<details class="panel"><summary>评分标准与参考附件</summary>
+<form method="post" enctype="multipart/form-data" action="{{ url_for('teaching_tools.update_reference',id=assignment.id) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="revision" value="{{ assignment.revision }}">
+<label for="rubric">评分标准</label><textarea id="rubric" name="rubric" maxlength="5000">{{ assignment.rubric or '' }}</textarea>
+<label for="reference">参考附件（最大 20 MB）</label><input id="reference" type="file" name="reference">
+{% if assignment.reference_path %}<label><input type="checkbox" name="remove_reference" value="1">移除当前参考附件</label>{% endif %}
+<p><button>保存教学资料</button></p></form></details>
+{% endif %}
 {% if current_user.role == 'TEACHER' %}
     <details class="panel">
         <summary>作业管理</summary>
-        {% if not assignment.archived %}
+        {% if teaching_open %}
             <form method="post" action="{{ url_for('final_stage.edit_assignment',id=assignment.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="revision" value="{{ assignment.revision }}">
                 <label for="edit-title">作业标题</label>
                 <input id="edit-title" name="title" required maxlength="200" value="{{ assignment.title }}">
                 <label for="edit-description">作业要求</label>
@@ -21,6 +32,7 @@
         {% endif %}
         <form method="post" action="{{ url_for('final_stage.archive_assignment',id=assignment.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="revision" value="{{ assignment.revision }}">
             <input type="hidden" name="action" value="{{ 'restore' if assignment.archived else 'archive' }}">
             <p class="muted">{{ '恢复后按当前截止时间继续提交与批改。' if assignment.archived else '归档后从日常任务中移出，停止提交与批改，成绩和附件保留。' }}</p>
             <button class="secondary">{{ '恢复作业' if assignment.archived else '归档作业' }}</button>

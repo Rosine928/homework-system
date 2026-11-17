@@ -1,8 +1,9 @@
-{% if current_user.role == 'TEACHER' and active and sub.review_state == 'RETURNED' and not assignment.archived %}
+{% if current_user.role == 'TEACHER' and active and sub.review_state == 'RETURNED' and teaching_open %}
     <details class="redo">
         <summary>延长重交期限</summary>
         <form method="post" action="{{ url_for('final_stage.extend_redo',id=sub.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="revision" value="{{ sub.revision }}">
             <label for="extend-reason-{{ sub.id }}">延期原因</label>
             <textarea id="extend-reason-{{ sub.id }}" name="reason" required maxlength="2000">
 </textarea>

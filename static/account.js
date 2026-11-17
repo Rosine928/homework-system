@@ -8,6 +8,7 @@ if (accountRole && studentNumber && realName) {
         studentNumber.disabled = !student;
         studentNumber.required = student;
         realName.required = student;
+        document.querySelector('.teacher-field').hidden = student;
     };
     accountRole.addEventListener('change', updateIdentity);
     updateIdentity();
