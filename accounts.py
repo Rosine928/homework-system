@@ -45,9 +45,6 @@ def register():
             flash("用户名需为 2-40 个字符，密码需为 8-128 位。", "error")
         elif role not in {"STUDENT", "TEACHER"}:
             flash("请选择有效的账号角色。", "error")
-        elif role == "TEACHER" and (not current_app.config["TEACHER_REGISTRATION_CODE"] or not hmac.compare_digest(
-            request.form.get("teacher_code", "").encode("utf-8"), current_app.config["TEACHER_REGISTRATION_CODE"].encode("utf-8"))):
-            flash("教师注册需要有效邀请码，请联系系统维护人员。", "error")
         elif error:
             flash(error, "error")
         elif User.query.filter_by(username=username).first():

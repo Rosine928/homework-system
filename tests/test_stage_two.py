@@ -976,12 +976,27 @@ class ZZImprovementTests(unittest.TestCase):
         self.assertEqual(AccountEvent.query.filter_by(action='PASSWORD_CHANGE').count(), 1)
         self.assertTrue(self.client.post('/login', data={'username':'student','password':'ChangedPass123'}).location.endswith('/dashboard'))
 
-    def test_teacher_invite_login_throttle_and_disabled_user(self):
+    def test_teacher_registration_without_invite_and_login(self):
+        page = self.client.get('/register')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'value="TEACHER"', page.data)
+        self.assertNotIn(b'teacher_code', page.data)
         payload = {'username':'new-teacher','password':'GoodPass123','role':'TEACHER','real_name':'Teacher'}
-        with patch.dict(app.config, TEACHER_REGISTRATION_CODE=''):
-            self.assertEqual(self.client.post('/register', data=payload).status_code, 400)
-        with patch.dict(app.config, TEACHER_REGISTRATION_CODE='invite-secret'):
-            self.assertEqual(self.client.post('/register', data={**payload,'teacher_code':'invite-secret'}).status_code, 302)
+        response = self.client.post('/register', data=payload)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.location.endswith('/login'))
+        teacher = User.query.filter_by(username='new-teacher').one()
+        self.assertEqual(teacher.role, 'TEACHER')
+        self.assertEqual(teacher.real_name, 'Teacher')
+        self.assertIsNone(teacher.student_number)
+        self.assertNotEqual(teacher.password, payload['password'])
+        self.assertEqual(self.client.post('/register', data=payload).status_code, 400)
+        self.assertEqual(User.query.filter_by(username='new-teacher').count(), 1)
+        response = self.client.post('/login', data={'username':payload['username'],'password':payload['password']})
+        self.assertTrue(response.location.endswith('/dashboard'))
+        self.assertEqual(self.client.get('/dashboard').status_code, 200)
+
+    def test_login_throttle_and_disabled_user(self):
         for _ in range(5):
             self.client.post('/login', data={'username':'student','password':'wrong'})
         self.assertEqual(self.client.post('/login', data={'username':'student','password':'password'}).status_code, 429)

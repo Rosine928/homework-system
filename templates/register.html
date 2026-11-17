@@ -19,11 +19,6 @@
                     <option value="STUDENT">学生</option>
                     <option value="TEACHER" {% if request.form.get('role') == 'TEACHER' %}selected{% endif %}>教师</option>
                 </select>
-                <div class="teacher-field" {% if request.form.get('role') != 'TEACHER' %}hidden{% endif %}>
-                    <label for="teacher-code">教师邀请码</label>
-                    <input id="teacher-code" name="teacher_code" type="password" maxlength="200" autocomplete="off">
-                    <small>教师注册需由系统维护人员提供邀请码，也可联系维护人员直接创建账号。</small>
-                </div>
                 <label for="real-name">姓名</label>
                 <input id="real-name" name="real_name" maxlength="40" value="{{ request.form.get('real_name','') }}" autocomplete="name" required>
                 <div class="student-field">
